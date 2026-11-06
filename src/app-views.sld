@@ -56,7 +56,16 @@
          "Die unterbrochene Aufnahme wird verarbeitet.")
         ("export-queued" success . "Der Export wurde gestartet.")
         ("no-takes" error . "Es gibt noch keine fertigen Aufnahmen.")
-        ("project-deleted" success . "Projekt gelöscht.")))
+        ("project-deleted" success . "Projekt gelöscht.")
+        ("publish-queued" success . "Das Video wird an filme übertragen.")
+        ("no-export" error . "Bitte zuerst exportieren.")
+        ("filme-saved" success . "Das Token wurde geprüft und gespeichert.")
+        ("filme-removed" success . "Das Token wurde entfernt.")
+        ("filme-bad-token" error . "filme hat das Token abgelehnt.")
+        ("filme-unreachable" error .
+         "filme ist nicht erreichbar; das Token wurde nicht gespeichert.")
+        ("filme-no-token" error .
+         "Bitte zuerst ein API-Token von filme hinterlegen.")))
 
     (define (notice-text code)
       "Syntax: (notice-text code)
@@ -314,10 +323,42 @@ Description: \"m:ss\" or \"h:mm:ss\"."
                                          (required #t))))
                               (button (@ (type "submit") (class "primary"))
                                       "Passwort ändern"))
+                        ,(if (alist-ref ctx 'filme)
+                             (filme-section ctx user)
+                             "")
                         (form (@ (method "post")
                                  (action ,(url "/logout"))
                                  (class "logout-form"))
                               (button (@ (type "submit")) "Abmelden"))))))
+
+    (define (filme-section ctx user)
+      (let ((filme (alist-ref ctx 'filme))
+            (token (alist-ref user 'filme-token #f)))
+        `(div (@ (class "filme-connection"))
+              (h2 "Verbindung zu filme")
+              (p (@ (class "hint"))
+                 "Fertige Videos lassen sich direkt nach "
+                 (a (@ (href ,filme)) ,filme)
+                 " hochladen. Erstellen Sie dort unter Profil ein API-Token und tragen Sie es hier ein.")
+              (p ,(if (string? token)
+                      (string-append "Token hinterlegt (…"
+                                     (substring
+                                      token
+                                      (max 0 (- (string-length token) 4))
+                                      (string-length token))
+                                     ").")
+                      "Kein Token hinterlegt."))
+              (form (@ (method "post") (action ,(url "/profile/filme")))
+                    (label "API-Token"
+                           (input (@ (name "token")
+                                     (type "password")
+                                     (autocomplete "off")
+                                     (placeholder
+                                      ,(if
+                                        (string? token)
+                                        "leer lassen und speichern: Token entfernen"
+                                        "fltk_…")))))
+                    (button (@ (type "submit")) "Token speichern")))))
 
     ;; --- the video grid ----------------------------------------------------
 
@@ -840,7 +881,12 @@ Description: \"m:ss\" or \"h:mm:ss\"."
                            (data-api ,(url
                                        (string-append "/api/projects/"
                                                       (alist-ref p 'id))))
-                           (data-export ,(symbol->string status)))
+                           (data-export ,(symbol->string status))
+                           (data-publish
+                            ,(symbol->string
+                              (alist-ref (alist-ref p 'publish '())
+                                         'status
+                                         'none))))
                         (p (a (@ (href ,(url "/"))) "‹ Alle Projekte"))
                         ,(notice msg)
                         (form (@ (method "post")
@@ -945,6 +991,7 @@ Description: \"m:ss\" or \"h:mm:ss\"."
                                            "?download=1")))
                                        "Herunterladen"))
                                   ""))
+                        ,(publish-card ctx p)
                         (form (@ (method "post")
                                  (action ,(project-url p "/delete"))
                                  (class "card danger-zone js-confirm")
@@ -1057,6 +1104,100 @@ Description: \"m:ss\" or \"h:mm:ss\"."
                             (button (@ (type "submit") (class "primary"))
                                     "Exportieren")))
             "js/editor.js"))
+
+    (define (publish-card ctx p)
+      (let* ((filme (alist-ref ctx 'filme))
+             (token (alist-ref (ctx-user ctx) 'filme-token #f))
+             (e (alist-ref p 'export '()))
+             (pub (alist-ref p 'publish '()))
+             (status (alist-ref pub 'status 'none)))
+        (cond ((not filme) "")
+              ((not (eq? (alist-ref e 'status) 'ready)) "")
+              (else `(div (@ (class "card publish"))
+                          (h2 "In filme veröffentlichen")
+                          ,(case status
+                             ((queued running)
+                              `(div (p (@ (class "js-publish-label"))
+                                       ,(if (eq? status 'queued)
+                                            "Wartet …"
+                                            "Wird hochgeladen …"))
+                                    (progress
+                                     (@
+                                      (class "js-publish-progress")
+                                      (max "100")
+                                      (value
+                                       ,(number->string
+                                         (exact
+                                          (round
+                                           (*
+                                            100
+                                            (alist-ref pub
+                                                       'progress
+                                                       0))))))))))
+                             ((done)
+                              `(div (p (@ (class "notice success"))
+                                       "Veröffentlicht – das Video ist in filme als Entwurf angelegt. "
+                                       (a (@ (href ,(alist-ref pub 'url "")))
+                                          "In filme öffnen"))
+                                    ,(if
+                                      (and
+                                       (number? (alist-ref e 'finished #f))
+                                       (number? (alist-ref pub 'export #f))
+                                       (> (alist-ref e 'finished)
+                                          (alist-ref pub 'export)))
+                                      '(p
+                                        (@ (class "notice warning"))
+                                        "Der Export ist neuer als die veröffentlichte Fassung. "
+                                        "Erneut veröffentlichen legt in filme ein weiteres Video an.")
+                                      "")))
+                             ((failed)
+                              `(p (@ (class "notice error"))
+                                  ,(string-append
+                                    "Veröffentlichen fehlgeschlagen: "
+                                    (or (alist-ref pub 'error) ""))))
+                             (else ""))
+                          ,(cond ((memq status '(queued running)) "")
+                                 ((not (string? token))
+                                  `(p (@ (class "hint"))
+                                      "Hinterlegen Sie zuerst im "
+                                      (a (@ (href ,(url "/profile")))
+                                         "Profil")
+                                      " ein API-Token von filme."))
+                                 (else `(form
+                                         (@
+                                          (method "post")
+                                          (action
+                                           ,(project-url p "/publish")))
+                                         (label
+                                          "Titel"
+                                          (input
+                                           (@
+                                            (name "title")
+                                            (required #t)
+                                            (maxlength "200")
+                                            (value
+                                             ,(alist-ref
+                                               pub
+                                               'title
+                                               (alist-ref p 'title ""))))))
+                                         (label
+                                          "Beschreibung (Markdown)"
+                                          (textarea
+                                           (@ (name "description") (rows "4"))
+                                           ,(alist-ref pub 'description "")))
+                                         (label
+                                          "Schlagwörter (durch Komma getrennt)"
+                                          (input
+                                           (@
+                                            (name "tags")
+                                            (value
+                                             ,(alist-ref pub 'tags "")))))
+                                         (button
+                                          (@ (type "submit")
+                                             (class "primary"))
+                                          ,(if (eq? status 'done)
+                                               "Erneut veröffentlichen"
+                                               "Veröffentlichen"))))))))))
 
     (define (record-page ctx p)
       (page ctx "Aufnehmen"

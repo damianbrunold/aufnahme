@@ -211,3 +211,5 @@ button.record { font-size: 1.1rem; padding: 0.6rem 1.2rem; }
 .segment .wave { flex: 2; background-repeat: no-repeat; border-top: 1px solid var(--border); }
 .segment .label { position: absolute; left: 0.25rem; top: 0.25rem; font-size: 0.75rem; padding: 0 0.3rem; border-radius: 0.2rem; background: rgb(0 0 0 / 0.65); color: #fff; white-space: nowrap; overflow: hidden; max-width: calc(100% - 0.5rem); }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--danger); pointer-events: none; }
+.publish progress { width: 100%; height: 0.7rem; accent-color: var(--accent); }
+.filme-connection { margin-top: 1.5rem; }

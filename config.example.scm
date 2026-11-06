@@ -33,6 +33,11 @@
 ;; Recording is refused when less than this much disk space would remain.
 (define min-free-bytes (* 2 1024 1024 1024))
 
+;; The filme installation to publish to, e.g. "https://filme.example.com"
+;; (with its URL prefix, if any). "" turns publishing off. Each user stores
+;; a personal API token from filme on their profile page.
+(define filme-url "")
+
 ;; Programs used for processing (must be on the PATH, or give full paths).
 (define ffmpeg "ffmpeg")
 (define ffprobe "ffprobe")

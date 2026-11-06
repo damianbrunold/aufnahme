@@ -40,6 +40,7 @@
                                             (* 60 60 24 14)))
               (secure-cookies? . ,(config-ref cfg 'secure-cookies? #t))
               (site-name . ,(config-ref cfg 'site-name "Aufnahme"))
+              (filme-url . ,(config-ref cfg 'filme-url #f))
               (min-free-bytes .
                               ,(config-ref cfg
                                            'min-free-bytes

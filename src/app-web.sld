@@ -20,6 +20,7 @@
           (scm fs-find)
           (scm json simple)
           (scm log)
+          (scm net http client)
           (scm net http forms)
           (scm net http middleware)
           (scm net http multipart)
@@ -29,6 +30,7 @@
           (scm net http static)
           (scm string)
           (app auth)
+          (app filme)
           (app media)
           (app projects)
           (app site)
@@ -259,6 +261,8 @@ Description: Builds the app's request handler. settings is an alist:
                               (setting settings 'secure-cookies?)
                               users-file))
              (initial-name (setting settings 'site-name "Aufnahme"))
+             (filme-url (normalize-filme-url
+                         (setting settings 'filme-url #f)))
              (login-limit (make-limiter 10 600))
              (router (make-router))
              (min-free (setting settings
@@ -277,7 +281,8 @@ Description: Builds the app's request handler. settings is an alist:
         (define (ctx user)
           `((user . ,user)
             (settings . ,(load-settings data-dir initial-name))
-            (theme-v . ,(settings-version data-dir))))
+            (theme-v . ,(settings-version data-dir))
+            (filme . ,filme-url)))
 
         (define (msg-of req) (notice-text (qref req "m")))
 
@@ -430,7 +435,69 @@ Description: Builds the app's request handler. settings is an alist:
              ,(let ((e (alist-ref p 'export '())))
                 `(("status" . ,(symbol->string (alist-ref e 'status 'none)))
                   ("progress" . ,(alist-ref e 'progress 0))
+                  ("error" . ,(or (alist-ref e 'error) 'null)))))
+            ("publish"
+             .
+             ,(let ((e (alist-ref p 'publish '())))
+                `(("status" . ,(symbol->string (alist-ref e 'status 'none)))
+                  ("progress" . ,(alist-ref e 'progress 0))
                   ("error" . ,(or (alist-ref e 'error) 'null)))))))
+
+        (define (set-publish! pid . kvs)
+          (project-update! data-dir pid
+                           (lambda (p)
+                             (alist-set
+                              p
+                              'publish
+                              (let loop
+                                  ((e (alist-ref p 'publish '()))
+                                   (kvs kvs))
+                                (if (null? kvs)
+                                    e
+                                    (loop (alist-set e (car kvs) (cadr kvs))
+                                          (cddr kvs))))))))
+
+        (define (publish! pid token info)
+          (let ((p (project-ref data-dir pid)))
+            (guard (e (#t
+                       (let
+                           ((msg (if (error-object? e)
+                                     (error-object-message e)
+                                     "unbekannter Fehler")))
+                         (log-warn "filme" (string-append pid ": " msg))
+                         (set-publish! pid 'status 'failed 'error msg))))
+              (set-publish! pid 'status 'running 'progress 0 'error #f)
+              (let* ((last 0)
+                     (r (filme-publish!
+                         filme-url
+                         token
+                         (project-file data-dir pid "export.mp4")
+                         (string-append
+                          (clean-filename (alist-ref info 'title))
+                          ".mp4")
+                         info
+                         (lambda (f)
+                           (when (>= (- (now-seconds) last) 2)
+                             (set! last (now-seconds))
+                             (set-publish! pid 'progress (min 0.99 f)))))))
+                (set-publish! pid
+                              'status
+                              'done
+                              'progress
+                              1
+                              'error
+                              #f
+                              'video
+                              (alist-ref r 'video)
+                              'url
+                              (alist-ref r 'url)
+                              'published
+                              (now-seconds)
+                              'export
+                              (alist-ref (alist-ref p 'export '()) 'finished))
+                (log-info "filme"
+                          (string-append pid ": published as "
+                                         (or (alist-ref r 'video) "?")))))))
 
         ;; --- static, theme, branding ---
 
@@ -943,6 +1010,111 @@ Description: Builds the app's request handler. settings is an alist:
           (signed-in (lambda (req params user)
                        (html-response (profile-page (ctx user)
                                                     (msg-of req))))))
+
+        (route! "POST" "/p/:pid/publish"
+          (with-project (lambda (req params user p)
+                          (let* ((pid (alist-ref p 'id))
+                                 (form (http-request-form req))
+                                 (token (alist-ref user 'filme-token #f))
+                                 (title
+                                  (string-trim-both
+                                   (form-ref form "title" ""))))
+                            (cond ((not filme-url) (not-found user))
+                                  ((not (string? token))
+                                   (redirect "/profile?m=filme-no-token"))
+                                  ((not
+                                    (eq?
+                                     (alist-ref (alist-ref p 'export '())
+                                                'status)
+                                     'ready))
+                                   (redirect
+                                    (string-append "/p/" pid "?m=no-export")))
+                                  ((memq
+                                    (alist-ref (alist-ref p 'publish '())
+                                               'status)
+                                    '(queued running))
+                                   (redirect (string-append "/p/" pid)))
+                                  (else
+                                   (let
+                                       ((info
+                                         `((title
+                                            .
+                                            ,(if (string=? title "")
+                                                 (alist-ref p 'title "")
+                                                 title))
+                                           (description
+                                            .
+                                            ,(form-ref form "description" ""))
+                                           (tags
+                                            .
+                                            ,(form-ref form "tags" "")))))
+                                     (set-publish!
+                                      pid
+                                      'status
+                                      'queued
+                                      'progress
+                                      0
+                                      'error
+                                      #f
+                                      'title
+                                      (alist-ref info 'title)
+                                      'description
+                                      (alist-ref info 'description)
+                                      'tags
+                                      (alist-ref info 'tags))
+                                     (enqueue-job!
+                                      jobs
+                                      (string-append "publish:" pid)
+                                      (lambda () (publish! pid token info)))
+                                     (redirect
+                                      (string-append "/p/" pid
+                                                     "?m=publish-queued")))))))))
+
+        ;; --- profile: connection to filme ---
+
+        (route! "POST" "/profile/filme"
+          (signed-in (lambda (req params user)
+                       (let
+                           ((token (string-trim-both
+                                    (form-ref (http-request-form req)
+                                              "token"
+                                              ""))))
+                         (cond ((not filme-url) (not-found user))
+                               ((string=? token "")
+                                (update-user! users-file
+                                              (user-name user)
+                                              'filme-token
+                                              #f)
+                                (redirect "/profile?m=filme-removed"))
+                               (else
+                                ;; Check the token: filme answers 404 for an unknown
+                                ;; upload when the token is good, 401 when it is not.
+                                (let
+                                    ((r
+                                      (guard (e (#t #f))
+                                        (http-send
+                                         (make-http-request
+                                          "GET"
+                                          (string-append filme-url
+                                                         "/api/uploads/check")
+                                          (list
+                                           (cons
+                                            "Authorization"
+                                            (string-append "Bearer " token)))
+                                          #f
+                                          20)))))
+                                  (cond
+                                   ((not r)
+                                    (redirect "/profile?m=filme-unreachable"))
+                                   ((memv (http-response-status r) '(401 403))
+                                    (redirect "/profile?m=filme-bad-token"))
+                                   (else
+                                    (update-user! users-file
+                                                  (user-name user)
+                                                  'filme-token
+                                                  token)
+                                    (redirect
+                                     "/profile?m=filme-saved"))))))))))
 
         (route! "POST" "/profile/password"
           (signed-in (lambda (req params user)

@@ -4,7 +4,7 @@ A screencast recorder that runs in the browser: a small "OBS" for
 recording tutorials. It is written in [dabscm](../dabscm) and is the
 companion of [filme](../filme), which presents the finished videos.
 
-**Status: phase 3 (editor).** You can:
+**Status: phase 4 (publishing to filme).** You can:
 - create projects;
 - record takes (screen, window or tab, with microphone and tab/system
   audio, plus an optional webcam);
@@ -16,9 +16,12 @@ companion of [filme](../filme), which presents the finished videos.
   - webcam on/off, corner and size, with a live preview;
   - loudness normalization;
   - saved automatically;
-- export the cut as one MP4 and download it.
+- export the cut as one MP4 and download it;
+- publish it to filme, where it arrives as a draft with title,
+  description and tags.
 
-Next: publishing to filme. The full plan, in
+Next: conveniences: a floating control window, offline buffering and
+auto-login on a local install. The full plan, in
 short:
 
 1. **Record:**
@@ -88,6 +91,7 @@ src/app-theme.sld     branding settings, theme.css, contrast check
 src/app-projects.sld  projects and takes on disk; ordered, idempotent chunk appends
 src/app-timeline.sld  segments + webcam layout -> ffmpeg arguments (pure)
 src/app-media.sld     ffprobe/ffmpeg: remux and probe takes, export, job queue
+src/app-filme.sld     client for filme's upload API (publish an export)
 src/app-views.sld     HTML pages (German UI)
 src/app-web.sld       routes, handlers, middleware: make-app
 static/               CSS and ES-module JavaScript (no build step):
@@ -136,10 +140,26 @@ a common library.
 
    The command line comes from `(app timeline)`.
 
+## Publishing to filme
+
+1. Set `filme-url` in the config (e.g. `"https://filme.example.com"`).
+2. Each user creates a personal API token in filme (Profil → API-Tokens)
+   and enters it on their profile page here. aufnahme checks it against
+   filme before storing it.
+3. Once an export is ready, the project page offers "In filme
+   veröffentlichen" with title, description and tags.
+   - The server uploads the export through filme's resumable upload API,
+     retrying after network errors.
+   - The video arrives in filme as a draft. The project page links to it.
+
+The token is stored in `users.scm` in plain text, because aufnahme has to
+send it. Revoking it in filme ends its use at once.
+
 ## Tests
 
 ```sh
-tests/run_all.sh   # test_media.scm needs ffmpeg
+tests/run_all.sh   # test_media.scm and test_publish.scm need ffmpeg;
+                   # test_publish.scm starts ../filme on port 8199
 ```
 
 The recorder page itself was tested in headless Chromium, with fake

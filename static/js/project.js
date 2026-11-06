@@ -4,11 +4,14 @@ const root = document.querySelector(".js-project");
 if (root) {
   const label = root.querySelector(".js-export-label");
   const bar = root.querySelector(".js-export-progress");
+  const pubLabel = root.querySelector(".js-publish-label");
+  const pubBar = root.querySelector(".js-publish-progress");
+  const active = (s) => ["queued", "running"].includes(s);
   const busy = (j) =>
-    ["queued", "running"].includes(j.export.status) ||
-    j.takes.some((t) => t.status === "processing");
+    active(j.export.status) || active(j.publish.status) || j.takes.some((t) => t.status === "processing");
   const initiallyBusy =
-    ["queued", "running"].includes(root.dataset.export) ||
+    active(root.dataset.export) ||
+    active(root.dataset.publish) ||
     root.querySelector('[data-status="processing"]') !== null;
 
   async function poll() {
@@ -23,6 +26,11 @@ if (root) {
         bar.value = Math.round(100 * j.export.progress);
         label.textContent =
           j.export.status === "queued" ? "Export wartet …" : "Export läuft … " + bar.value + " %";
+      }
+      if (pubBar && active(j.publish.status)) {
+        pubBar.value = Math.round(100 * j.publish.progress);
+        pubLabel.textContent =
+          j.publish.status === "queued" ? "Wartet …" : "Wird hochgeladen … " + pubBar.value + " %";
       }
       if (!busy(j)) {
         location.reload();
