@@ -15,10 +15,13 @@
 
 (define-library (app timeline)
   (import (scheme base))
-  (export export-arguments
+  (export clean-segments
+          default-segments
+          export-arguments
           output-size
           segment-length
-          segments-length)
+          segments-length
+          strip-count)
   (begin
 
     (define (ref al key default)
@@ -40,6 +43,62 @@
                        (number->string f))))
 
     (define (even n) (* 2 (exact (round (/ n 2)))))
+
+    ;; --- the cut list ----------------------------------------------------
+    ;;
+    ;; A project's cut list is a list of ((take . tid) (start . s) (end . e)):
+    ;; the pieces to keep, in playing order. takes below is a list of
+    ;; (tid . duration) for the project's ready takes, in recording order.
+
+    (define (default-segments takes)
+      "Syntax: (default-segments takes)
+Library: (app timeline)
+Description: The cut list that keeps every take whole, in order. takes is
+  a list of (take-id . duration)."
+      (map (lambda (t) `((take . ,(car t)) (start . 0) (end . ,(cdr t))))
+           takes))
+
+    ;; Segments shorter than this are dropped (a stray click while cutting).
+    (define min-segment 0.05)
+
+    (define (clean-segments segs takes)
+      "Syntax: (clean-segments segments takes)
+Library: (app timeline)
+Description: segments with every entry checked against takes (a list of
+  (take-id . duration)): unknown takes are dropped, times are clamped to
+  the take and rounded to milliseconds, pieces shorter than 50 ms are
+  dropped. #f (no cut list saved) gives the default cut list."
+      (if (not (list? segs))
+          (default-segments takes)
+          (let loop ((ss segs) (acc '()))
+            (if (null? ss)
+                (reverse acc)
+                (let* ((seg (car ss))
+                       (tid (and (list? seg) (ref seg 'take #f)))
+                       (t (and (string? tid) (assoc tid takes)))
+                       (start (and t (ref seg 'start #f)))
+                       (end (and t (ref seg 'end #f))))
+                  (if (and t (real? start) (real? end))
+                      (let* ((ms (lambda (x)
+                                   (/ (round (* 1000 (exact x))) 1000)))
+                             (a (ms (max 0 (min start (cdr t)))))
+                             (b (ms (max 0 (min end (cdr t))))))
+                        (loop (cdr ss)
+                              (if (< (- b a) min-segment)
+                                  acc
+                                  (cons
+                                   `((take . ,tid)
+                                     (start . ,(inexact a))
+                                     (end . ,(inexact b)))
+                                   acc))))
+                      (loop (cdr ss) acc)))))))
+
+    (define (strip-count duration)
+      "Syntax: (strip-count duration)
+Library: (app timeline)
+Description: How many frames the film strip of a take of duration
+  seconds shows: one per 5 s, at least 4, at most 120."
+      (max 4 (min 120 (exact (ceiling (/ duration 5))))))
 
     (define (segment-length seg)
       "Syntax: (segment-length segment)

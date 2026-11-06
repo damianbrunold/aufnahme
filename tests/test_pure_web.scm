@@ -336,6 +336,31 @@
                                 "")))
     (test-equal 404 (status (send app "GET" (string-append "/p/" pid) uli)))))
 
+(test-group "editor"
+  (let* ((loc (location (send app "POST" "/projects" uli "")))
+         (pid (substring loc 3 14))
+         (edit (string-append "/api/projects/" pid "/edit")))
+    (test-equal "nothing to edit yet"
+                (string-append "/p/" pid "?m=no-takes")
+                (location (send app "GET"
+                                (string-append "/p/" pid "/edit")
+                                uli)))
+    (let ((r (send app "GET" edit uli)))
+      (test-equal 200 (status r))
+      (test-assert (has? (body r) "\"segments\":[]"))
+      (test-assert (has? (body r) "\"corner\":\"bottom-right\"")))
+    (test-equal 404 (status (send app "GET" edit otto)))
+    (test-equal 400 (status (json-send app "PUT" edit uli "not json")))
+    (test-equal 200
+                (status (json-send app "PUT" edit uli
+                                   "{\"segments\":[{\"take\":\"nope\",\"start\":0,\"end\":5}],\"webcam\":{\"on\":true,\"corner\":\"evil\",\"size\":9},\"loudnorm\":true}")))
+    (let ((b (body (send app "GET" edit uli))))
+      (test-assert "unknown takes dropped" (has? b "\"segments\":[]"))
+      (test-assert "bad corner replaced"
+                   (has? b "\"corner\":\"bottom-right\""))
+      (test-assert "bad size replaced" (has? b "\"size\":0.22"))
+      (test-assert (has? b "\"loudnorm\":true")))))
+
 (test-group "url prefix"
   (let* ((app (app-with "/rec"))
          (r (send app "POST" "/rec/login" #f

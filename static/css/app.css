@@ -189,3 +189,25 @@ meter.level { width: 100%; height: 0.8rem; margin: -0.5rem 0 1rem; }
 button.record { font-size: 1.1rem; padding: 0.6rem 1.2rem; }
 .is-recording .timer { color: var(--danger); }
 .is-recording .timer::before { content: "● "; }
+
+/* --- editor --------------------------------------------------------------- */
+
+.editor-grid { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 3fr) minmax(14rem, 1fr); align-items: start; }
+@media (max-width: 860px) { .editor-grid { grid-template-columns: 1fr; } }
+.editor-side { margin: 0; }
+.editor-side h2 + label { margin-top: 0.5rem; }
+.editor-side input[type="range"] { padding: 0; }
+.stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 0.4rem; overflow: hidden; }
+.stage > .js-main { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.stage > .camview { position: absolute; height: auto; aspect-ratio: auto; border-radius: 0.2rem; }
+.transport { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 1rem 0 0.75rem; }
+.transport .time { font-variant-numeric: tabular-nums; min-width: 9ch; margin: 0 0.5rem; }
+.timeline { position: relative; padding: 0.25rem 0; cursor: pointer; user-select: none; }
+.timeline:focus-visible { outline: 2px solid var(--accent); }
+.segments { display: flex; height: 7.5rem; gap: 2px; }
+.segment { position: relative; display: flex; flex-direction: column; min-width: 2px; border-radius: 0.3rem; overflow: hidden; background: var(--surface); border: 2px solid var(--border); }
+.segment.selected { border-color: var(--accent); }
+.segment .strip { flex: 3; background-repeat: no-repeat; background-color: var(--border); }
+.segment .wave { flex: 2; background-repeat: no-repeat; border-top: 1px solid var(--border); }
+.segment .label { position: absolute; left: 0.25rem; top: 0.25rem; font-size: 0.75rem; padding: 0 0.3rem; border-radius: 0.2rem; background: rgb(0 0 0 / 0.65); color: #fff; white-space: nowrap; overflow: hidden; max-width: calc(100% - 0.5rem); }
+.playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--danger); pointer-events: none; }

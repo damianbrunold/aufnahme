@@ -25,12 +25,14 @@
           (app projects)
           (app store)
           (app timeline))
-  (export enqueue-job!
+  (export edit-takes
+          enqueue-job!
           export-project!
           ffmpeg-program
           ffprobe-program
           jobs-idle?
           make-jobs
+          make-previews!
           probe-media
           process-take!
           project-segments)
@@ -229,6 +231,24 @@ Description: Remuxes and probes the tracks of a finished take, makes its
                                            0))))
                                  (t (alist-set t 'status 'ready)))
                             (alist-set t 'error #f))))
+          (make-previews! data-dir pid tid)
+          ;; A project that already has a cut list gets the new take
+          ;; appended whole, so it shows up in the editor and the export.
+          (project-update! data-dir pid
+                           (lambda (p)
+                             (let ((segs (alist-ref p 'segments #f)))
+                               (if (list? segs)
+                                   (alist-set
+                                    p
+                                    'segments
+                                    (append
+                                     segs
+                                     (list
+                                      `((take . ,tid)
+                                        (start . 0)
+                                        (end .
+                                             ,(alist-ref sinfo 'duration))))))
+                                   p))))
           ;; The raw parts are no longer needed: the remuxed files hold the
           ;; same streams.
           (for-each (lambda (n)
@@ -238,40 +258,103 @@ Description: Remuxes and probes the tracks of a finished take, makes its
                             (if cname (list "cam.part") '())))
           (log-info "media" (string-append pid "/" tid ": ready")))))
 
+    (define (make-previews! data-dir pid tid)
+      "Syntax: (make-previews! data-dir pid tid)
+Library: (app media)
+Description: Makes the editor's film strip (strip.jpg: strip-count frames
+  of 160x90 side by side) and, if the take has sound, its waveform
+  (wave.png) for a ready take. Failures are logged, not raised."
+      (let* ((t (take-ref data-dir pid tid))
+             (file (and t (alist-ref (alist-ref t 'screen) 'file)))
+             (d (and t (alist-ref t 'duration 0))))
+        (when (and file (> d 0))
+          (let ((src (take-file data-dir pid tid file))
+                (n (strip-count d)))
+            (guard
+                (e (#t
+                    (log-warn "media"
+                              (string-append pid "/" tid ": no film strip"))))
+              (let ((tmp (take-file data-dir pid tid "strip.tmp.jpg")))
+                (run-ffmpeg (list "-nostdin" "-y" "-v" "error" "-i" src "-vf"
+                                  (string-append
+                                   "fps="
+                                   (number->string n)
+                                   "/"
+                                   (number->string d)
+                                   ",scale=160:90:force_original_aspect_ratio=decrease"
+                                   ",pad=160:90:(ow-iw)/2:(oh-ih)/2,tile="
+                                   (number->string n)
+                                   "x1")
+                                  "-frames:v"
+                                  "1"
+                                  "-q:v"
+                                  "5"
+                                  tmp)
+                            (+ 120 (exact (ceiling d)))
+                            (lambda () #f))
+                (move-file tmp (take-file data-dir pid tid "strip.jpg"))
+                (take-update! data-dir pid tid
+                              (lambda (t) (alist-set t 'strip n)))))
+            (when (alist-ref t 'has-audio #f)
+              (guard
+                  (e (#t
+                      (log-warn "media"
+                                (string-append pid "/" tid ": no waveform"))))
+                (let ((tmp (take-file data-dir pid tid "wave.tmp.png")))
+                  (run-ffmpeg (list "-nostdin" "-y" "-v" "error" "-i" src
+                                    "-filter_complex"
+                                    "aformat=channel_layouts=mono,showwavespic=s=1600x80:scale=sqrt:colors=0x3b82f6"
+                                    "-frames:v" "1" tmp)
+                              (+ 120 (exact (ceiling d)))
+                              (lambda () #f))
+                  (move-file tmp
+                             (take-file data-dir pid tid "wave.png")))))))))
+
+    (define (edit-takes data-dir p)
+      "Syntax: (edit-takes data-dir project)
+Library: (app media)
+Description: (take-id . duration) for each ready take of project, in
+  recording order: what a cut list may refer to."
+      (let loop ((ts (project-takes data-dir p)))
+        (cond ((null? ts) '())
+              ((and (eq? (alist-ref (car ts) 'status) 'ready)
+                    (> (alist-ref (car ts) 'duration 0) 0))
+               (cons (cons (alist-ref (car ts) 'id)
+                           (alist-ref (car ts) 'duration))
+                     (loop (cdr ts))))
+              (else (loop (cdr ts))))))
+
     ;; --- export ------------------------------------------------------------------
 
     (define (project-segments data-dir p)
       "Syntax: (project-segments data-dir project)
 Library: (app media)
-Description: One whole-take segment (see (app timeline)) per ready take
-  of project, in order."
-      (let ((pid (alist-ref p 'id)))
-        (let loop ((ts (project-takes data-dir p)))
-          (cond ((null? ts) '())
-                ((and (eq? (alist-ref (car ts) 'status) 'ready)
-                      (> (alist-ref (car ts) 'duration 0) 0))
-                 (let* ((t (car ts))
-                        (tid (alist-ref t 'id))
-                        (cam (alist-ref t 'cam))
-                        (cfile (and cam (alist-ref cam 'file))))
-                   (cons `((take . ,tid)
-                           (screen .
-                                   ,(take-file
-                                     data-dir
-                                     pid
-                                     tid
-                                     (alist-ref (alist-ref t 'screen) 'file)))
-                           (cam .
-                                ,(and cfile
-                                      (take-file data-dir pid tid cfile)))
-                           (cam-offset . ,(alist-ref t 'cam-offset 0))
-                           (has-audio . ,(alist-ref t 'has-audio #f))
-                           (width . ,(alist-ref t 'width 0))
-                           (height . ,(alist-ref t 'height 0))
-                           (start . 0)
-                           (end . ,(alist-ref t 'duration 0)))
-                         (loop (cdr ts)))))
-                (else (loop (cdr ts)))))))
+Description: The segments (see (app timeline)) to export: the project's
+  cut list, or every ready take whole when it has none."
+      (let ((pid (alist-ref p 'id))
+            (takes (project-takes data-dir p)))
+        (map (lambda (cut)
+               (let* ((tid (alist-ref cut 'take))
+                      (t (let find ((ts takes))
+                           (if (equal? (alist-ref (car ts) 'id) tid)
+                               (car ts)
+                               (find (cdr ts)))))
+                      (cam (alist-ref t 'cam))
+                      (cfile (and cam (alist-ref cam 'file))))
+                 `((take . ,tid)
+                   (screen .
+                           ,(take-file data-dir pid tid
+                                       (alist-ref (alist-ref t 'screen)
+                                                  'file)))
+                   (cam . ,(and cfile (take-file data-dir pid tid cfile)))
+                   (cam-offset . ,(alist-ref t 'cam-offset 0))
+                   (has-audio . ,(alist-ref t 'has-audio #f))
+                   (width . ,(alist-ref t 'width 0))
+                   (height . ,(alist-ref t 'height 0))
+                   (start . ,(alist-ref cut 'start))
+                   (end . ,(alist-ref cut 'end)))))
+             (clean-segments (alist-ref p 'segments #f)
+                             (edit-takes data-dir p)))))
 
     (define (set-export! data-dir pid . kvs)
       (project-update! data-dir pid
@@ -329,11 +412,13 @@ Description: Renders project pid into export.mp4 (see export-arguments
             (error "Keine fertigen Aufnahmen zum Exportieren."))
           (set-export! data-dir pid 'status 'running 'progress 0 'error #f)
           (let ((last-written 0))
-            (run-ffmpeg (export-arguments segs
-                                          (alist-ref p 'webcam '())
-                                          options
-                                          tmp
-                                          progress)
+            (run-ffmpeg (export-arguments
+                         segs
+                         (alist-ref p 'webcam '())
+                         (cons (cons 'loudnorm (alist-ref p 'loudnorm #f))
+                               options)
+                         tmp
+                         progress)
                         (+ 600 (* 6 (exact (ceiling total))))
                         (lambda ()
                           ;; Write the progress at most every 2 s.

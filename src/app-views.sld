@@ -18,6 +18,7 @@
           (app users))
   (export admin-site-page
           admin-users-page
+          edit-page
           error-page
           format-duration
           home-page
@@ -871,61 +872,24 @@ Description: \"m:ss\" or \"h:mm:ss\"."
                                        (cons (take-item p (car ts) n)
                                              (loop (cdr ts) (+ n 1)))))))
                         (div (@ (class "card"))
-                             (h2 "Export")
+                             (div (@ (class "page-head"))
+                                  (h2 "Schnitt und Export")
+                                  ,(if (null? takes)
+                                       ""
+                                       `(a
+                                         (@ (class "button")
+                                            (href ,(project-url p "/edit")))
+                                         "Schneiden und Webcam einstellen")))
                              (p (@ (class "hint"))
-                                "Alle fertigen Aufnahmen werden der Reihe nach zu einem MP4-Video "
-                                "(H.264/AAC) zusammengefügt; die Webcam wird eingeblendet.")
+                                ,(if (alist-ref p 'segments #f)
+                                     "Der Export folgt dem Schnitt aus dem Editor."
+                                     "Ohne Schnitt werden alle fertigen Aufnahmen der Reihe nach zusammengefügt.")
+                                " Ergebnis: ein MP4-Video (H.264/AAC)"
+                                ,(if (alist-ref cam 'on #t)
+                                     ", mit eingeblendeter Webcam."
+                                     "."))
                              (form (@ (method "post")
                                       (action ,(project-url p "/export")))
-                                   (fieldset
-                                    (legend "Webcam")
-                                    (label
-                                     (@ (class "check"))
-                                     (input
-                                      (@ (type "checkbox")
-                                         (name "webcam-on")
-                                         (value "1")
-                                         (checked ,(alist-ref cam 'on #t))))
-                                     "Webcam einblenden")
-                                    (div
-                                     (@ (class "inline-fields"))
-                                     (label
-                                      "Position"
-                                      (select
-                                       (@ (name "corner"))
-                                       ,@(map
-                                          (lambda (c)
-                                            `(option
-                                              (@
-                                               (value
-                                                ,(symbol->string (car c)))
-                                               (selected
-                                                ,(eq?
-                                                  (car c)
-                                                  (alist-ref cam
-                                                             'corner
-                                                             'bottom-right))))
-                                              ,(cdr c)))
-                                          corner-labels)))
-                                     (label
-                                      "Grösse"
-                                      (select
-                                       (@ (name "size"))
-                                       ,@(map
-                                          (lambda (s)
-                                            `(option
-                                              (@
-                                               (value ,(car s))
-                                               (selected
-                                                ,(equal?
-                                                  (string->number (car s))
-                                                  (alist-ref cam
-                                                             'size
-                                                             0.22))))
-                                              ,(cdr s)))
-                                          '(("0.15" . "klein")
-                                            ("0.22" . "mittel")
-                                            ("0.3" . "gross")))))))
                                    (button
                                     (@ (type "submit")
                                        (class "primary")
@@ -991,6 +955,108 @@ Description: \"m:ss\" or \"h:mm:ss\"."
                                       "Projekt löschen")))
               "js/project.js"
               "js/confirm.js")))
+
+    (define (edit-page ctx p)
+      (page ctx "Schneiden"
+            'edit
+            `(section (@ (class "editor js-editor")
+                         (data-api ,(url
+                                     (string-append "/api/projects/"
+                                                    (alist-ref p 'id))))
+                         (data-project-url ,(project-url p)))
+                      (p (a (@ (href ,(project-url p)))
+                            ,(string-append "‹ " (alist-ref p 'title ""))))
+                      (h1 "Schneiden")
+                      (div (@ (class "editor-grid"))
+                           (div (@ (class "stage js-stage"))
+                                (video (@ (class "js-main")
+                                          (preload "auto")
+                                          (playsinline #t)))
+                                (video (@ (class "camview js-camview")
+                                          (preload "auto")
+                                          (muted #t)
+                                          (playsinline #t)
+                                          (hidden #t))))
+                           (div (@ (class "card editor-side"))
+                                (h2 "Webcam")
+                                (label (@ (class "check"))
+                                       (input
+                                        (@ (type "checkbox")
+                                           (class "js-cam-on")))
+                                       "Webcam einblenden")
+                                (label "Position"
+                                       (select
+                                        (@ (class "js-corner"))
+                                        ,@(map
+                                           (lambda (c)
+                                             `(option
+                                               (@
+                                                (value
+                                                 ,(symbol->string (car c))))
+                                               ,(cdr c)))
+                                           corner-labels)))
+                                (label "Grösse"
+                                       (input
+                                        (@ (type "range")
+                                           (class "js-size")
+                                           (min "0.1")
+                                           (max "0.4")
+                                           (step "0.01"))))
+                                (h2 "Ton")
+                                (label (@ (class "check"))
+                                       (input
+                                        (@ (type "checkbox")
+                                           (class "js-loudnorm")))
+                                       "Lautstärke angleichen")
+                                (p (@ (class "hint"))
+                                   "Gleicht die Lautheit auf einen üblichen Wert an (EBU R128).")
+                                (p (@ (class "hint js-save-status")
+                                      (aria-live "polite")))))
+                      (div (@ (class "transport"))
+                           (button (@ (type "button")
+                                      (class "primary js-play")
+                                      (title "Leertaste"))
+                                   "Abspielen")
+                           (span (@ (class "time js-time")) "0:00 / 0:00")
+                           (button (@ (type "button")
+                                      (class "js-split")
+                                      (title "S"))
+                                   "Teilen")
+                           (button (@ (type "button")
+                                      (class "js-remove")
+                                      (title "Entf"))
+                                   "Entfernen")
+                           (button (@ (type "button")
+                                      (class "js-left")
+                                      (title "Abschnitt nach vorne"))
+                                   "← Nach vorne")
+                           (button (@ (type "button")
+                                      (class "js-right")
+                                      (title "Abschnitt nach hinten"))
+                                   "Nach hinten →")
+                           (button (@ (type "button")
+                                      (class "js-undo")
+                                      (title "Strg+Z"))
+                                   "Rückgängig")
+                           (button (@ (type "button") (class "js-reset"))
+                                   "Alles zurücksetzen"))
+                      (div (@ (class "timeline js-timeline")
+                              (tabindex "0")
+                              (aria-label
+                               "Zeitleiste: klicken zum Springen, Abschnitt wählen"))
+                           (div (@ (class "segments js-segments")))
+                           (div (@ (class "playhead js-playhead"))))
+                      (p (@ (class "hint"))
+                         "Klicken Sie in die Zeitleiste, um an eine Stelle zu springen und einen Abschnitt "
+                         "auszuwählen. „Teilen“ schneidet an der Abspielposition, „Entfernen“ löscht den "
+                         "gewählten Abschnitt. Tasten: Leertaste, S, Entf, ←/→ (eine Sekunde), Strg+Z. "
+                         "Änderungen werden automatisch gespeichert.")
+                      (form (@ (method "post")
+                               (action ,(project-url p "/export"))
+                               (class "js-export-form"))
+                            (button (@ (type "submit") (class "primary"))
+                                    "Exportieren")))
+            "js/editor.js"))
 
     (define (record-page ctx p)
       (page ctx "Aufnehmen"

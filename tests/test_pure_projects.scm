@@ -173,5 +173,40 @@
                                    "/p"))
                           "/c.webm"))))
 
+(test-group "cut list"
+  (define takes '(("a" . 10.0) ("b" . 4.5)))
+  (test-equal '(((take . "a") (start . 0) (end . 10.0))
+                ((take . "b") (start . 0) (end . 4.5)))
+              (default-segments takes))
+  (test-equal "no cut list: every take whole"
+              (default-segments takes)
+              (clean-segments #f takes))
+  (test-equal "kept as given"
+              '(((take . "b") (start . 1.0) (end . 2.0))
+                ((take . "a") (start . 3.0) (end . 4.0)))
+              (clean-segments '(((take . "b") (start . 1) (end . 2))
+                                ((take . "a") (start . 3) (end . 4)))
+                              takes))
+  (test-equal "clamped to the take"
+              '(((take . "b") (start . 0.0) (end . 4.5)))
+              (clean-segments '(((take . "b") (start . -3) (end . 99)))
+                              takes))
+  (test-equal "unknown takes, junk and tiny pieces are dropped"
+              '(((take . "a") (start . 1.0) (end . 1.5)))
+              (clean-segments '(((take . "zz") (start . 0) (end . 1))
+                                ((take . "a") (start . 2) (end . 2.01))
+                                ((take . "a") (start . "x") (end . 3))
+                                "garbage"
+                                ((take . "a") (start . 1) (end . 1.5)))
+                              takes))
+  (test-equal "rounded to milliseconds"
+              '(((take . "a") (start . 1.235) (end . 2.0)))
+              (clean-segments '(((take . "a") (start . 1.23456) (end . 2)))
+                              takes))
+  (test-equal '() (clean-segments '() takes))
+  (test-equal 4 (strip-count 3))
+  (test-equal 20 (strip-count 100))
+  (test-equal 120 (strip-count 3600)))
+
 (rm tmp 'recursive 'force)
 (test-end "aufnahme projects")

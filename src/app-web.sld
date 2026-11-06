@@ -34,6 +34,7 @@
           (app site)
           (app store)
           (app theme)
+          (app timeline)
           (app users)
           (app views))
   (export app-jobs
@@ -193,6 +194,12 @@
              (guard (e (#t #f))
                (let ((j (json-parse body))) (and (list? j) j))))))
 
+    (define (filter-alists xs)
+      (let loop ((xs xs))
+        (cond ((null? xs) '())
+              ((list? (car xs)) (cons (car xs) (loop (cdr xs))))
+              (else (loop (cdr xs))))))
+
     (define (free-bytes dir)
       ;; df reports 1K blocks.
       (let ((d (guard (e (#t '())) (df dir))))
@@ -319,6 +326,83 @@ Description: Builds the app's request handler. settings is an alist:
                      (json-error 401 "not signed in"))
                     ((not p) (json-error 404 "no such project"))
                     (else (handler req params user p))))))
+
+        (define (take-url p t file)
+          (url (string-append "/p/"
+                              (alist-ref p 'id)
+                              "/takes/"
+                              (alist-ref t 'id)
+                              "/"
+                              file)))
+
+        (define (edit-json p)
+          (let* ((takes (let loop ((ts (project-takes data-dir p)))
+                          (cond ((null? ts) '())
+                                ((eq? (alist-ref (car ts) 'status) 'ready)
+                                 (cons (car ts) (loop (cdr ts))))
+                                (else (loop (cdr ts))))))
+                 (cam (alist-ref p 'webcam '())))
+            `(("takes"
+               .
+               ,(list->vector (map (lambda (t)
+                                     (let ((c (alist-ref t 'cam)))
+                                       `(("id" . ,(alist-ref t 'id))
+                                         ("duration"
+                                          .
+                                          ,(alist-ref t 'duration 0))
+                                         ("width" . ,(alist-ref t 'width 0))
+                                         ("height" . ,(alist-ref t 'height 0))
+                                         ("hasAudio"
+                                          .
+                                          ,(alist-ref t 'has-audio #f))
+                                         ("screen"
+                                          .
+                                          ,(take-url
+                                            p
+                                            t
+                                            (alist-ref (alist-ref t 'screen)
+                                                       'file)))
+                                         ("cam"
+                                          .
+                                          ,(if
+                                            (and c (alist-ref c 'file))
+                                            (take-url p t (alist-ref c 'file))
+                                            'null))
+                                         ("camOffset"
+                                          .
+                                          ,(alist-ref t 'cam-offset 0))
+                                         ("strip"
+                                          .
+                                          ,(if (alist-ref t 'strip #f)
+                                               (take-url p t "strip.jpg")
+                                               'null))
+                                         ("stripCount"
+                                          .
+                                          ,(alist-ref t 'strip 0))
+                                         ("wave"
+                                          .
+                                          ,(if
+                                            (and (alist-ref t 'has-audio #f)
+                                                 (alist-ref t 'strip #f))
+                                            (take-url p t "wave.png")
+                                            'null)))))
+                                   takes)))
+              ("segments"
+               .
+               ,(list->vector (map (lambda (s)
+                                     `(("take" . ,(alist-ref s 'take))
+                                       ("start" . ,(alist-ref s 'start))
+                                       ("end" . ,(alist-ref s 'end))))
+                                   (clean-segments (alist-ref p 'segments #f)
+                                                   (edit-takes data-dir p)))))
+              ("webcam"
+               .
+               (("on" . ,(alist-ref cam 'on #t))
+                ("corner"
+                 .
+                 ,(symbol->string (alist-ref cam 'corner 'bottom-right)))
+                ("size" . ,(alist-ref cam 'size 0.22))))
+              ("loudnorm" . ,(alist-ref p 'loudnorm #f)))))
 
         (define (process-take-later! pid tid)
           (take-update! data-dir pid tid
@@ -505,6 +589,8 @@ Description: Builds the app's request handler. settings is an alist:
                                   (and t
                                        (list
                                         "thumb.jpg"
+                                        "strip.jpg"
+                                        "wave.png"
                                         (alist-ref (alist-ref t 'screen)
                                                    'file)
                                         (let ((c (alist-ref t 'cam)))
@@ -520,41 +606,8 @@ Description: Builds the app's request handler. settings is an alist:
 
         (route! "POST" "/p/:pid/export"
           (with-project (lambda (req params user p)
-                          (let* ((pid (alist-ref p 'id))
-                                 (form (http-request-form req))
-                                 (corner
-                                  (string->symbol
-                                   (form-ref form "corner" "bottom-right")))
-                                 (size (string->number
-                                        (form-ref form "size" "0.22"))))
-                            (project-update!
-                             data-dir
-                             pid
-                             (lambda (p)
-                               (alist-set
-                                p
-                                'webcam
-                                `((on .
-                                      ,(equal? (form-ref form "webcam-on" "")
-                                               "1"))
-                                  (corner
-                                   .
-                                   ,(if
-                                     (memq
-                                      corner
-                                      '(top-left top-right bottom-left
-                                        bottom-right))
-                                     corner
-                                     'bottom-right))
-                                  (size
-                                   .
-                                   ,(if (and (real? size) (<= 0.05 size 0.5))
-                                        size
-                                        0.22))
-                                  (margin . 24)))))
-                            (if (null? (project-segments
-                                        data-dir
-                                        (project-ref data-dir pid)))
+                          (let ((pid (alist-ref p 'id)))
+                            (if (null? (project-segments data-dir p))
                                 (redirect
                                  (string-append "/p/" pid "?m=no-takes"))
                                 (begin
@@ -580,6 +633,143 @@ Description: Builds the app's request handler. settings is an alist:
                                   (redirect
                                    (string-append "/p/" pid
                                                   "?m=export-queued"))))))))
+
+        ;; --- editor ---
+
+        (route! "GET" "/p/:pid/edit"
+          (with-project (lambda (req params user p)
+                          (let ((pid (alist-ref p 'id)))
+                            (if (null? (edit-takes data-dir p))
+                                (redirect
+                                 (string-append "/p/" pid "?m=no-takes"))
+                                (begin
+                                  ;; Takes recorded before the editor existed (or whose
+                                  ;; previews failed) get their film strip now.
+                                  (for-each
+                                   (lambda (t)
+                                     (when
+                                         (and
+                                          (eq? (alist-ref t 'status) 'ready)
+                                          (not (alist-ref t 'strip #f)))
+                                       (enqueue-job!
+                                        jobs
+                                        (string-append "previews:" pid "/"
+                                                       (alist-ref t 'id))
+                                        (lambda ()
+                                          (make-previews!
+                                           data-dir
+                                           pid
+                                           (alist-ref t 'id))))))
+                                   (project-takes data-dir p))
+                                  (html-response
+                                   (edit-page (ctx user) p))))))))
+
+        (route! "GET" "/api/projects/:pid/edit"
+          (api-project (lambda (req params user p)
+                         (json-status 200 (edit-json p)))))
+
+        (route! "PUT" "/api/projects/:pid/edit"
+          (api-project (lambda (req params user p)
+                         (let ((j (parse-json-body req)))
+                           (if (not j)
+                               (json-error 400 "JSON body required")
+                               (let* ((pid (alist-ref p 'id))
+                                      (takes (edit-takes data-dir p))
+                                      (known
+                                       (let ((k (json-ref j "knownTakes" #f)))
+                                         (if (vector? k)
+                                             (vector->list k)
+                                             '())))
+                                      (segs
+                                       (let ((v (json-ref j "segments" #f)))
+                                         (and
+                                          (vector? v)
+                                          (map
+                                           (lambda (s)
+                                             `((take .
+                                                     ,(json-ref s "take" #f))
+                                               (start
+                                                .
+                                                ,(json-ref s "start" #f))
+                                               (end .
+                                                    ,(json-ref s "end" #f))))
+                                           (filter-alists
+                                            (vector->list v))))))
+                                      ;; Takes that became ready after the editor loaded
+                                      ;; are kept, appended whole.
+                                      (unseen
+                                       (let loop ((ts takes))
+                                         (cond
+                                          ((null? ts) '())
+                                          ((member (caar ts) known)
+                                           (loop (cdr ts)))
+                                          (else
+                                           (cons
+                                            `((take . ,(caar ts))
+                                              (start . 0)
+                                              (end . ,(cdar ts)))
+                                            (loop (cdr ts)))))))
+                                      (cam (json-ref j "webcam" '()))
+                                      (corner
+                                       (string->symbol
+                                        (let
+                                            ((c
+                                              (json-ref cam "corner"
+                                                        "bottom-right")))
+                                          (if (string? c) c "bottom-right"))))
+                                      (size (json-ref cam "size" 0.22)))
+                                 (if (not segs)
+                                     (json-error 400 "segments required")
+                                     (begin
+                                       (project-update!
+                                        data-dir
+                                        pid
+                                        (lambda (p)
+                                          (let*
+                                              ((p
+                                                (alist-set
+                                                 p
+                                                 'segments
+                                                 (clean-segments
+                                                  (append segs unseen)
+                                                  takes)))
+                                               (p
+                                                (alist-set
+                                                 p
+                                                 'loudnorm
+                                                 (eq?
+                                                  (json-ref j "loudnorm" #f)
+                                                  #t))))
+                                            (alist-set
+                                             p
+                                             'webcam
+                                             `((on
+                                                .
+                                                ,(not
+                                                  (eq? (json-ref cam "on" #t)
+                                                       #f)))
+                                               (corner
+                                                .
+                                                ,(if
+                                                  (memq
+                                                   corner
+                                                   '(top-left top-right
+                                                     bottom-left
+                                                     bottom-right))
+                                                  corner
+                                                  'bottom-right))
+                                               (size
+                                                .
+                                                ,(if
+                                                  (and (real? size)
+                                                       (<= 0.05 size 0.5))
+                                                  size
+                                                  0.22))
+                                               (margin . 24))))))
+                                       (json-status
+                                        200
+                                        (edit-json
+                                         (project-ref data-dir pid)))))))))))
 
         (route! "GET" "/p/:pid/export.mp4"
           (with-project

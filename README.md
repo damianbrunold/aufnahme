@@ -4,15 +4,21 @@ A screencast recorder that runs in the browser: a small "OBS" for
 recording tutorials. It is written in [dabscm](../dabscm) and is the
 companion of [filme](../filme), which presents the finished videos.
 
-**Status: phase 2 (recording MVP).** You can:
+**Status: phase 3 (editor).** You can:
 - create projects;
 - record takes (screen, window or tab, with microphone and tab/system
   audio, plus an optional webcam);
 - pause and resume;
 - have each take processed on the server;
-- export all takes as one MP4 with the webcam overlaid, and download it.
+- cut them in the editor:
+  - a timeline with film strip and waveform per piece;
+  - split at the playhead, remove, reorder, undo;
+  - webcam on/off, corner and size, with a live preview;
+  - loudness normalization;
+  - saved automatically;
+- export the cut as one MP4 and download it.
 
-Next: the editor (cut list), then publishing to filme. The full plan, in
+Next: publishing to filme. The full plan, in
 short:
 
 1. **Record:**
@@ -85,8 +91,9 @@ src/app-media.sld     ffprobe/ffmpeg: remux and probe takes, export, job queue
 src/app-views.sld     HTML pages (German UI)
 src/app-web.sld       routes, handlers, middleware: make-app
 static/               CSS and ES-module JavaScript (no build step):
-                      record.js (capture, mixing, chunk upload), project.js
-                      (status polling), support.js (browser check)
+                      record.js (capture, mixing, chunk upload), editor.js
+                      (timeline, cuts, preview playback), project.js (status
+                      polling), support.js (browser check)
 tests/                run_all.sh; test_pure_* need no server or ffmpeg
 deploy/               systemd units, nginx/apache examples, README.Debian
 package-deb.scm       builds the Debian package
@@ -114,10 +121,20 @@ a common library.
    - the webcam offset is the difference of the start times.
 4. **Recover a crashed take.** If the browser dies before "finish", the
    project page offers to process what arrived.
-5. **Export.** `export.mp4`, H.264/AAC with faststart. Each take is scaled
-   to the first take's size, the webcam is overlaid in the chosen corner,
-   and the takes are joined. The command line comes from
-   `(app timeline)`.
+5. **Previews.** Each ready take also gets `strip.jpg` (one 160×90 frame
+   per 5 s, side by side) and `wave.png` for the editor's timeline.
+6. **Cut list.** The editor saves the project's cut list:
+   - it is a list of `(take start end)` pieces, plus the webcam layout and
+     the loudness option (`PUT /api/projects/:pid/edit`);
+   - without a cut list, every take is used whole;
+   - a take recorded after editing is appended whole.
+7. **Export.** `export.mp4`, H.264/AAC with faststart:
+   - each piece is cut from its take and scaled to the first piece's size;
+   - the webcam is overlaid in the chosen corner;
+   - the pieces are joined, optionally with loudness normalization
+     (EBU R128).
+
+   The command line comes from `(app timeline)`.
 
 ## Tests
 

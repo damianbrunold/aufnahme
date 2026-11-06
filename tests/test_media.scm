@@ -228,5 +228,61 @@
                                        "Aufnahme vom"
                                        0))))
 
+(test-group "editor previews"
+  (test-assert (file-exists? (take-file tmp pid t1 "strip.jpg")))
+  (test-assert (file-exists? (take-file tmp pid t1 "wave.png")))
+  (test-equal 4 (alist-ref (take-ref tmp pid t1) 'strip))
+  (let ((info (probe-media (take-file tmp pid t1 "strip.jpg"))))
+    (test-equal "4 frames of 160 px" 640 (alist-ref info 'width)))
+  (test-equal 200
+              (http-response-status (send "GET"
+                                          (string-append "/p/" pid "/edit")
+                                          cookie
+                                          #f)))
+  (test-equal 200
+              (http-response-status (send
+                                     "GET"
+                                     (string-append "/p/" pid "/takes/" t1
+                                                    "/strip.jpg")
+                                     cookie
+                                     #f))))
+
+(test-group "cut list and export"
+  (let* ((edit (string-append "/api/projects/" pid "/edit"))
+         (r (send "PUT" edit cookie
+                  (string-append "{\"segments\":[{\"take\":\"" t2
+                                 "\",\"start\":0.5,\"end\":2.5},"
+                                 "{\"take\":\"" t1
+                                 "\",\"start\":1,\"end\":2.5}],"
+                                 "\"webcam\":{\"on\":false,\"corner\":\"top-left\",\"size\":0.3},"
+                                 "\"loudnorm\":true,\"knownTakes\":[\"" t1
+                                 "\",\"" t2 "\"]}")
+                  json)))
+    (test-equal 200 (http-response-status r))
+    (let ((p (project-ref tmp pid)))
+      (test-equal 2 (length (alist-ref p 'segments)))
+      (test-equal t2 (alist-ref (car (alist-ref p 'segments)) 'take))
+      (test-equal #t (alist-ref p 'loudnorm))
+      (test-equal #f (alist-ref (alist-ref p 'webcam) 'on))
+      (test-equal 'top-left (alist-ref (alist-ref p 'webcam) 'corner)))
+    (test-assert (string-contains-from (body (send "GET" edit cookie #f))
+                                       "\"loudnorm\":true"
+                                       0))
+    (test-equal 400
+                (http-response-status (send "PUT" edit cookie
+                                            "{\"webcam\":{}}" json))))
+  (send "POST" (string-append "/p/" pid "/export") cookie "" form)
+  (let ((e (alist-ref (project-ref tmp pid) 'export)))
+    (test-equal 'ready (alist-ref e 'status))
+    (test-assert "2 s + 1.5 s" (< 3.4 (alist-ref e 'duration) 3.6)))
+  (let ((info (probe-media (project-file tmp pid "export.mp4"))))
+    (test-assert (< 3.4 (alist-ref info 'duration) 3.7))
+    (test-assert (alist-ref info 'has-audio)))
+  (test-group "a take recorded after editing is appended to the cut list"
+    (let ((t3 (record-take! #f)))
+      (let ((segs (alist-ref (project-ref tmp pid) 'segments)))
+        (test-equal 3 (length segs))
+        (test-equal t3 (alist-ref (list-ref segs 2) 'take))))))
+
 (rm tmp 'recursive 'force)
 (test-end "aufnahme media")
