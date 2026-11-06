@@ -1,0 +1,17 @@
+# Apache reverse proxy in front of aufnahme (a2enmod proxy proxy_http ssl
+# headers). The app binds 127.0.0.1 only; Apache terminates TLS.
+<VirtualHost *:443>
+    ServerName aufnahme.example.com
+
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/aufnahme.example.com/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/aufnahme.example.com/privkey.pem
+
+    # Recording chunks are small; this is generous headroom.
+    LimitRequestBody 41943040
+    ProxyTimeout 300
+    ProxyPreserveHost On
+    ProxyPass        / http://127.0.0.1:8073/
+    ProxyPassReverse / http://127.0.0.1:8073/
+    RequestHeader set X-Forwarded-Proto "https"
+</VirtualHost>

@@ -1,0 +1,42 @@
+[Unit]
+Description=aufnahme screencast recorder (dabscm webapp)
+After=network-online.target
+Wants=network-online.target
+# If the health-check decides to restart us, that's fine — but if we
+# restart-loop more than 5 times in 60s, give up so we don't burn CPU.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=aufnahme
+Group=aufnahme
+WorkingDirectory=/opt/aufnahme/app
+# Optional JAVA_OPTS (e.g. -Xmx512m); see README.Debian.
+EnvironmentFile=-/etc/default/aufnahme
+ExecStart=/opt/aufnahme/bin/scm bin/server.scm /etc/aufnahme/config.scm
+
+# Restart whenever the process exits, not only on failure.
+Restart=always
+RestartSec=3s
+# The JVM exits with 128+SIGTERM on a normal stop.
+SuccessExitStatus=143
+# Give the HTTP server (10s graceful drain by default) time to finish.
+TimeoutStopSec=15s
+
+# Logs go to journald — read with: journalctl -u aufnahme -f
+StandardOutput=journal
+StandardError=journal
+
+# --- hardening ---
+# The only writable path is the data directory (recordings, users,
+# branding). Request bodies are buffered in the private /tmp.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+UMask=0027
+ReadWritePaths=/var/lib/aufnahme
+
+[Install]
+WantedBy=multi-user.target

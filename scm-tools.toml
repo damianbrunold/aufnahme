@@ -1,0 +1,12 @@
+exclude = ["var/**", "dist/**"]
+
+[format]
+width = 78
+library-path = ["src"]
+
+[format.indent]
+"route!" = 2
+"router-add!" = 3
+
+[lint]
+docstring-libraries = []

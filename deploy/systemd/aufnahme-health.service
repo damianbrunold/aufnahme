@@ -1,0 +1,9 @@
+[Unit]
+Description=aufnahme health probe (restarts aufnahme if /healthz fails)
+After=aufnahme.service
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/systemctl is-active --quiet aufnahme.service
+# Port/host come from /etc/aufnahme/config.scm; two strikes before a restart.
+ExecStart=/opt/aufnahme/bin/healthcheck aufnahme.service

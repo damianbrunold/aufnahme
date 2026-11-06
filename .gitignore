@@ -1,0 +1,4 @@
+# Local config (holds the session secret) and the development data folder.
+config.scm
+var/
+dist/

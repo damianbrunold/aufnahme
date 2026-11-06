@@ -1,0 +1,55 @@
+aufnahme for Debian/Ubuntu
+==========================
+
+A browser-based screencast recorder: record the screen, a window or a
+browser tab with the microphone and an optional webcam, edit the result
+with a simple cut list, export it as MP4 and publish it to filme.
+
+Browsers only allow screen capture on HTTPS or on http://localhost, so
+there are two ways to run it:
+
+  Central server   behind a TLS reverse proxy (nginx.conf.example /
+                   apache.conf.example in this directory); everyone
+                   records through https://aufnahme.example.com.
+  Recording PC     installed on the machine you record on; open
+                   http://localhost:8073 in the browser there. Set
+                   secure-cookies? #f in /etc/aufnahme/config.scm (the
+                   cookies would otherwise need HTTPS) and restart.
+
+Layout
+  /opt/aufnahme/app/            the app (bin, src, static)
+  /opt/aufnahme/bin/scm         the dabscm runtime it was built with
+  /etc/aufnahme/config.scm      the config (created on first install with a
+                                fresh secret, never overwritten)
+  /etc/default/aufnahme         optional: JAVA_OPTS="-Xmx512m"
+  /var/lib/aufnahme/            ALL data: back up this folder
+    projects/                   recordings, edits and exports
+    users.scm                   users, roles and password hashes
+    site/                       settings.scm (name, colours), logo, favicon
+  /usr/bin/aufnahme-admin       runs a tool from app/bin (as user aufnahme)
+
+Services
+  aufnahme.service              the web app (127.0.0.1:8073 by default)
+  aufnahme-health.timer         probes /healthz every minute, restarts the
+                                app after two failures
+
+First install
+  1. sudo apt install ./aufnahme_<version>_all.deb
+     (pulls in ffmpeg and a Java runtime; the service starts right away)
+  2. Create the first administrator:
+       sudo -u aufnahme aufnahme-admin user add <name> admin
+  3. Central server: put the TLS reverse proxy in front.
+     Recording PC: set secure-cookies? #f, then
+       sudo systemctl restart aufnahme
+     and open http://localhost:8073.
+  4. Sign in; the start page shows what the browser can record.
+
+Tools (run as the aufnahme user: sudo -u aufnahme aufnahme-admin <tool> ...)
+  user add <name> [user|admin]  prompts for the password
+  user passwd|role|disable|enable|delete <name> ...
+  user list
+
+Upgrades
+  sudo apt install ./aufnahme_<newer>_all.deb restarts the services; the
+  config and the data are kept. Purging the package removes /etc/aufnahme
+  but keeps /var/lib/aufnahme and the system user.
