@@ -14,7 +14,10 @@ there are two ways to run it:
   Recording PC     installed on the machine you record on; open
                    http://localhost:8073 in the browser there. Set
                    secure-cookies? #f in /etc/aufnahme/config.scm (the
-                   cookies would otherwise need HTTPS) and restart.
+                   cookies would otherwise need HTTPS) and restart. On a
+                   single-user machine, auto-login-user "<name>" skips
+                   the sign-in (only for http://localhost, never through
+                   a proxy).
 
 Layout
   /opt/aufnahme/app/            the app (bin, src, static)

@@ -196,6 +196,17 @@
              (guard (e (#t #f))
                (let ((j (json-parse body))) (and (list? j) j))))))
 
+    (define (local-host? h)
+      (and (member h '("127.0.0.1" "localhost" "::1" "[::1]")) #t))
+
+    ;; "localhost:8073" -> "localhost", "[::1]:8073" -> "[::1]"
+    (define (host-name h)
+      (let loop ((i (- (string-length h) 1)))
+        (cond ((< i 0) h)
+              ((char=? (string-ref h i) #\]) h)
+              ((char=? (string-ref h i) #\:) (substring h 0 i))
+              (else (loop (- i 1))))))
+
     (define (filter-alists xs)
       (let loop ((xs xs))
         (cond ((null? xs) '())
@@ -261,6 +272,8 @@ Description: Builds the app's request handler. settings is an alist:
                               (setting settings 'secure-cookies?)
                               users-file))
              (initial-name (setting settings 'site-name "Aufnahme"))
+             (auto-login (let ((u (setting settings 'auto-login-user #f)))
+                           (and (string? u) (> (string-length u) 0) u)))
              (filme-url (normalize-filme-url
                          (setting settings 'filme-url #f)))
              (login-limit (make-limiter 10 600))
@@ -291,7 +304,21 @@ Description: Builds the app's request handler. settings is an alist:
                               '(("Content-Type" . "text/html; charset=utf-8"))
                               (not-found-page (ctx user))))
 
-        (define (current-user req) (session-user auth req))
+        ;; On a local recording PC (server bound to loopback, browser on
+        ;; the same machine) auto-login-user signs in without a password.
+        ;; Requests through a reverse proxy never qualify: they carry
+        ;; X-Forwarded-For and the public host name.
+        (define (auto-login-user req)
+          (and auto-login
+               (local-host? (setting settings 'http-host "127.0.0.1"))
+               (not (http-request-header req "X-Forwarded-For"))
+               (local-host? (host-name (or (http-request-header req "Host")
+                                           "")))
+               (let ((u (find-user users-file auto-login)))
+                 (and u (not (user-disabled? u)) u))))
+
+        (define (current-user req)
+          (or (session-user auth req) (auto-login-user req)))
 
         ;; Runs handler with the user as a third argument.
         (define (with-role role handler)

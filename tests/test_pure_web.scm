@@ -361,6 +361,56 @@
       (test-assert "bad size replaced" (has? b "\"size\":0.22"))
       (test-assert (has? b "\"loudnorm\":true")))))
 
+(test-group "auto-login on a local recording PC"
+  (define (local-app host user)
+    (make-app `((url-prefix . "")
+                (static-dir . ,(string-append root "/static"))
+                (data-dir . ,tmp)
+                (session-secret . ,(base64-encode (random-bytes 32)))
+                (session-max-age . 3600)
+                (secure-cookies? . #f)
+                (process? . #f)
+                (http-host . ,host)
+                (auto-login-user . ,user))))
+  (let ((app (local-app "127.0.0.1" "uli")))
+    (test-equal "localhost: signed in" 200
+                (status (send app "GET" "/" #f #f
+                              '(("Host" . "localhost:8073")))))
+    (test-equal 200
+                (status (send app "GET" "/" #f #f
+                              '(("Host" . "127.0.0.1:8073")))))
+    (test-equal "through a proxy: not" 303
+                (status (send app "GET" "/" #f #f
+                              '(("Host" . "localhost:8073")
+                                ("X-Forwarded-For" . "10.0.0.5")))))
+    (test-equal "public host name: not" 303
+                (status (send app "GET" "/" #f #f
+                              '(("Host" . "rec.example.com")))))
+    (test-equal "no admin rights for a plain user" 403
+                (status (send app "GET" "/admin/users" #f #f
+                              '(("Host" . "localhost"))))))
+  (test-equal "server not bound to loopback: never" 303
+              (status (send (local-app "0.0.0.0" "uli")
+                            "GET"
+                            "/"
+                            #f
+                            #f
+                            '(("Host" . "localhost")))))
+  (test-equal "unknown user: nothing" 303
+              (status (send (local-app "127.0.0.1" "nobody")
+                            "GET"
+                            "/"
+                            #f
+                            #f
+                            '(("Host" . "localhost")))))
+  (test-equal "off by default" 303
+              (status (send (local-app "127.0.0.1" "")
+                            "GET"
+                            "/"
+                            #f
+                            #f
+                            '(("Host" . "localhost"))))))
+
 (test-group "url prefix"
   (let* ((app (app-with "/rec"))
          (r (send app "POST" "/rec/login" #f

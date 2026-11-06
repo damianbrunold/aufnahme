@@ -10,6 +10,13 @@
 (define http-port 8073)
 (define http-max-threads 32)
 
+;; Local recording PC only: sign this user in automatically, without a
+;; password. Honoured only while http-host is a loopback address and only
+;; for requests to http://localhost (or 127.0.0.1) without a proxy in
+;; between. Anyone who can use this machine can then record as that user.
+;; "" turns it off.
+(define auto-login-user "")
+
 ;; Path the app is mounted under, e.g. "/aufnahme"; "" for the host root.
 (define url-prefix "")
 

@@ -7,6 +7,8 @@
 // with a sequence number (PUT .../takes/:tid/:track?seq=N) and retried
 // until the server has them, so a short network outage loses nothing.
 import { bestRecorderType, isChromium } from "./support.js";
+import { saveTake, saveChunk, deleteChunk, forgetTake, leftovers } from "./chunkstore.js";
+import { openControls } from "./controls.js";
 
 const root = document.querySelector(".js-recorder");
 const api = root.dataset.api;
@@ -30,6 +32,11 @@ const ui = {
   timer: $(".js-timer"),
   status: $(".js-status"),
   unsupported: $(".js-unsupported"),
+  pip: $(".js-pip"),
+  recover: $(".js-recover"),
+  recoverUpload: $(".js-recover-upload"),
+  recoverDiscard: $(".js-recover-discard"),
+  recoverStatus: $(".js-recover-status"),
 };
 
 const videoOnlyTypes = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
@@ -209,6 +216,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class ChunkQueue {
   constructor(base, track) {
+    this.base = base;
+    this.track = track;
     this.url = base + "/" + track;
     this.queue = [];
     this.next = 0; // seq of the next chunk to hand in
@@ -218,7 +227,10 @@ class ChunkQueue {
   }
 
   push(blob) {
-    this.queue.push({ seq: this.next++, blob });
+    const seq = this.next++;
+    // Kept in IndexedDB until the server has it.
+    const stored = saveChunk(this.base, this.track, seq, blob);
+    this.queue.push({ seq, blob, stored });
     this.pump();
   }
 
@@ -231,7 +243,7 @@ class ChunkQueue {
     this.running = true;
     let failures = 0;
     while (this.queue.length > 0) {
-      const { seq, blob } = this.queue[0];
+      const { seq, blob, stored } = this.queue[0];
       let r = null;
       try {
         r = await fetch(this.url + "?seq=" + seq, {
@@ -251,6 +263,7 @@ class ChunkQueue {
         }
         this.queue.shift();
         this.sent++;
+        stored.then(deleteChunk);
         failures = 0;
       } else if (r && r.status >= 400 && r.status < 500) {
         setStatus("Fehler beim Übertragen (" + r.status + ").");
@@ -294,8 +307,12 @@ function tickTimer() {
   const ms = elapsed + (state === "recording" ? performance.now() - resumedAt : 0);
   ui.timer.textContent = formatTime(ms);
   const pending = Object.values(queues).reduce((n, q) => n + q.pending, 0);
-  if (state === "recording")
-    setStatus("Aufnahme läuft" + (pending > 2 ? " – " + pending + " Teile warten auf Übertragung" : ""));
+  const text =
+    state === "recording"
+      ? "Aufnahme läuft" + (pending > 2 ? " – " + pending + " Teile warten auf Übertragung" : "")
+      : state === "paused" ? "Pausiert" : ui.status.textContent;
+  if (state === "recording") setStatus(text);
+  if (controls) controls.update({ time: ui.timer.textContent, state, text });
 }
 
 function setControls() {
@@ -317,17 +334,29 @@ function makeRecorder(stream, types, bitrate, name) {
   });
   rec.addEventListener("start", () => {
     starts[name] = performance.timeOrigin + performance.now();
+    saveTake({ base: takeBase, projectUrl, starts: { ...starts }, created: Date.now() });
   });
   rec.addEventListener("error", (e) => setStatus("Aufnahmefehler: " + (e.error?.message || "unbekannt")));
   return { rec, type, name };
 }
 
+let controls = null;
+
 ui.start.addEventListener("click", async () => {
   if (!displayStream) return;
+  if (ui.pip.checked) {
+    // Needs the click's user activation: open before anything else waits.
+    controls = await openControls({
+      onPause: () => ui.pause.click(),
+      onStop: () => stopRecording(),
+      camStream,
+    });
+  }
   state = "countdown";
   setControls();
   for (let i = 3; i > 0; i--) {
     setStatus("Die Aufnahme beginnt in " + i + " …");
+    if (controls) controls.update({ time: "0:00", state, text: "Beginnt in " + i + " …" });
     await sleep(1000);
   }
 
@@ -356,11 +385,14 @@ ui.start.addEventListener("click", async () => {
   const j = r ? await r.json().catch(() => ({})) : {};
   if (!r || !r.ok) {
     setStatus("Die Aufnahme konnte nicht beginnen: " + (j.error || (r ? r.status : "keine Verbindung")));
+    if (controls) controls.close();
+    controls = null;
     state = "idle";
     setControls();
     return;
   }
   takeBase = api + "/takes/" + j.id;
+  await saveTake({ base: takeBase, projectUrl, starts: {}, created: Date.now() });
   queues = { screen: new ChunkQueue(takeBase, "screen") };
   if (cam) queues.cam = new ChunkQueue(takeBase, "cam");
   starts = {};
@@ -388,6 +420,7 @@ ui.pause.addEventListener("click", () => {
 });
 
 ui.stop.addEventListener("click", () => stopRecording());
+ui.pause.addEventListener("click", () => tickTimer());
 
 async function stopRecording() {
   if (state !== "recording" && state !== "paused") return;
@@ -416,7 +449,10 @@ async function stopRecording() {
   stopStream(displayStream);
   stopStream(camStream);
   stopStream(micStream);
+  if (controls) controls.close();
+  controls = null;
   if (r && r.ok) {
+    await forgetTake(takeBase);
     setStatus("Fertig. Die Aufnahme wird verarbeitet …");
     location.href = projectUrl;
   } else {
@@ -425,6 +461,65 @@ async function stopRecording() {
       ". Auf der Projektseite lässt sich die Aufnahme retten.");
   }
 }
+
+// --- leftovers of an interrupted recording ------------------------------------
+
+async function checkLeftovers() {
+  const items = await leftovers();
+  if (!items.length) return;
+  const n = items.reduce((k, it) => k + it.chunks.length, 0);
+  ui.recover.hidden = false;
+  ui.recoverStatus.textContent =
+    items.length + (items.length === 1 ? " Aufnahme, " : " Aufnahmen, ") + n + " Teile.";
+
+  ui.recoverDiscard.onclick = async () => {
+    if (!window.confirm("Die nicht übertragenen Teile endgültig verwerfen?")) return;
+    for (const it of items) await forgetTake(it.take.base);
+    ui.recover.hidden = true;
+  };
+
+  ui.recoverUpload.onclick = async () => {
+    ui.recoverUpload.disabled = true;
+    let done = 0;
+    for (const { take, chunks } of items) {
+      let gone = false;
+      for (const track of ["screen", "cam"]) {
+        const list = chunks.filter((c) => c.track === track).sort((a, b) => a.seq - b.seq);
+        for (const c of list) {
+          if (gone) break;
+          let r = null;
+          try {
+            r = await fetch(take.base + "/" + track + "?seq=" + c.seq, {
+              method: "PUT",
+              headers: { "Content-Type": "application/octet-stream" },
+              body: c.blob,
+            });
+          } catch (e) {}
+          if (!r) {
+            ui.recoverStatus.textContent = "Keine Verbindung zum Server – bitte später erneut versuchen.";
+            ui.recoverUpload.disabled = false;
+            return;
+          }
+          if (r.status === 404) gone = true; // take deleted or already rescued
+          else await deleteChunk(c.key);
+          ui.recoverStatus.textContent = "Übertragen: " + ++done + " von " + n + " Teilen …";
+        }
+      }
+      if (!gone) {
+        await fetch(take.base + "/finish", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ screenStart: take.starts.screen ?? null, camStart: take.starts.cam ?? null }),
+        }).catch(() => null);
+      }
+      await forgetTake(take.base);
+    }
+    ui.recoverStatus.textContent = "Fertig. Die Aufnahmen werden verarbeitet.";
+    setTimeout(() => (location.href = items[0].take.projectUrl || projectUrl), 1200);
+  };
+}
+
+checkLeftovers();
 
 window.addEventListener("beforeunload", (e) => {
   if (state !== "idle") e.preventDefault();

@@ -4,7 +4,7 @@ A screencast recorder that runs in the browser: a small "OBS" for
 recording tutorials. It is written in [dabscm](../dabscm) and is the
 companion of [filme](../filme), which presents the finished videos.
 
-**Status: phase 4 (publishing to filme).** You can:
+**Status: phase 5 (conveniences).** You can:
 - create projects;
 - record takes (screen, window or tab, with microphone and tab/system
   audio, plus an optional webcam);
@@ -20,8 +20,18 @@ companion of [filme](../filme), which presents the finished videos.
 - publish it to filme, where it arrives as a draft with title,
   description and tags.
 
-Next: conveniences: a floating control window, offline buffering and
-auto-login on a local install. The full plan, in
+While recording:
+- **Control window:** a small window floats above other windows with
+  the timer, pause/stop and the webcam image. It uses Document
+  Picture-in-Picture in Chrome and Edge, and a popup elsewhere.
+- **Offline buffering:** every chunk is kept in the browser
+  (IndexedDB) until the server has it. After a crash, a closed tab or a
+  long network outage, the recorder page offers to send the rest and
+  finish the take.
+- **Local auto-login:** on a recording PC, `auto-login-user` signs one
+  user in without a password (see below).
+
+Next: packaging polish and documentation (phase 6). The full plan, in
 short:
 
 1. **Record:**
@@ -50,6 +60,19 @@ Browsers only allow screen capture on **HTTPS** or on
   `deploy/nginx.conf.example`).
 - **Recording PC:** installed locally. Open `http://localhost:8073` and
   set `secure-cookies? #f`.
+
+## Local recording PC
+
+Install the package, set `secure-cookies? #f`, and open
+`http://localhost:8073` in the browser on that machine. For a
+single-user machine, set `auto-login-user` to that user's name. It only
+takes effect when all three hold:
+- the server is bound to a loopback address (`http-host`);
+- the browser asks for `localhost`, `127.0.0.1` or `[::1]`;
+- no `X-Forwarded-For` header is present.
+
+Requests through a reverse proxy therefore never qualify. Anyone who can
+use the machine can record as that user.
 
 ## Browser support
 
@@ -95,7 +118,9 @@ src/app-filme.sld     client for filme's upload API (publish an export)
 src/app-views.sld     HTML pages (German UI)
 src/app-web.sld       routes, handlers, middleware: make-app
 static/               CSS and ES-module JavaScript (no build step):
-                      record.js (capture, mixing, chunk upload), editor.js
+                      record.js (capture, mixing, chunk upload), chunkstore.js
+                      (IndexedDB safety net), controls.js (floating control
+                      window), editor.js
                       (timeline, cuts, preview playback), project.js (status
                       polling), support.js (browser check)
 tests/                run_all.sh; test_pure_* need no server or ffmpeg
