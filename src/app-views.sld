@@ -24,7 +24,9 @@
           login-page
           not-found-page
           notice-text
-          profile-page)
+          profile-page
+          project-page
+          record-page)
   (begin
 
     ;; --- messages ------------------------------------------------------
@@ -46,7 +48,14 @@
         ("logo-saved" success . "Bild gespeichert.")
         ("logo-bad" error . "Nur PNG, WebP oder SVG bis 1 MB.")
         ("bad-color" error . "Ungültige Farbe.")
-        ("no-title" error . "Bitte einen Titel angeben.")))
+        ("no-title" error . "Bitte einen Titel angeben.")
+        ("renamed" success . "Titel gespeichert.")
+        ("take-deleted" success . "Aufnahme gelöscht.")
+        ("take-rescued" success .
+         "Die unterbrochene Aufnahme wird verarbeitet.")
+        ("export-queued" success . "Der Export wurde gestartet.")
+        ("no-takes" error . "Es gibt noch keine fertigen Aufnahmen.")
+        ("project-deleted" success . "Projekt gelöscht.")))
 
     (define (notice-text code)
       "Syntax: (notice-text code)
@@ -641,29 +650,435 @@ Description: \"m:ss\" or \"h:mm:ss\"."
         ("display-audio" . "Ton von Tab oder System")
         ("pip" . "Schwebendes Steuerfenster")))
 
-    (define (home-page ctx)
+    (define (support-card)
+      `(div (@ (class "card"))
+            (h2 "Kann dieser Browser aufnehmen?")
+            (table (@ (class "data support js-support"))
+                   (tbody ,@(map (lambda (r)
+                                   `(tr (@ (data-check ,(car r)))
+                                        (th (@ (scope "row")) ,(cdr r))
+                                        (td (@ (class "js-result")) "…")
+                                        (td (@ (class "hint js-detail")) "")))
+                                 support-rows)))
+            (p (@ (class "hint"))
+               "Am besten geeignet ist ein aktueller Chrome oder Edge. "
+               "Firefox und Safari nehmen Bildschirm, Mikrofon und Webcam auf, "
+               "aber keinen Ton von Tabs oder vom System.")))
+
+    (define (format-size n)
+      (cond ((>= n 1073741824)
+             (string-append (number->string (/ (round (/ n 107374182.4)) 10))
+                            " GB"))
+            ((>= n 1048576)
+             (string-append (number->string (exact (round (/ n 1048576))))
+                            " MB"))
+            (else (string-append (number->string (exact (round (/ n 1024))))
+                                 " KB"))))
+
+    (define (project-url p . more)
+      (url (apply string-append "/p/" (alist-ref p 'id) more)))
+
+    (define (export-label e)
+      (case (alist-ref e 'status 'none)
+        ((queued) "Export wartet …")
+        ((running) "Export läuft …")
+        ((ready) "Exportiert")
+        ((failed) "Export fehlgeschlagen")
+        (else "Nicht exportiert")))
+
+    ;; projects: list of (project . takes).
+    (define (home-page ctx projects show-owner?)
       (page ctx "Projekte"
             'home
-            `(section (h1 "Projekte")
-                      (p (@ (class "empty")) "Noch keine Projekte.")
-                      (div (@ (class "card"))
-                           (h2 "Kann dieser Browser aufnehmen?")
-                           (table (@ (class "data support js-support"))
+            `(section (div (@ (class "page-head"))
+                           (h1 "Projekte")
+                           (form (@ (method "post")
+                                    (action ,(url "/projects")))
+                                 (button (@ (type "submit") (class "primary"))
+                                         "Neue Aufnahme")))
+                      ,(if (null? projects)
+                           '(p (@ (class "empty")) "Noch keine Projekte.")
+                           `(div (@ (class "table-wrap"))
+                                 (table
+                                  (@ (class "data"))
+                                  (thead
+                                   (tr (th "Titel")
+                                       (th (@ (class "num")) "Aufnahmen")
+                                       (th (@ (class "num")) "Dauer")
+                                       (th "Export")
+                                       ,@(if show-owner? '((th "Von")) '())
+                                       (th "Geändert")))
                                   (tbody
                                    ,@(map
-                                      (lambda (r)
-                                        `(tr
-                                          (@ (data-check ,(car r)))
-                                          (th (@ (scope "row")) ,(cdr r))
-                                          (td (@ (class "js-result")) "…")
-                                          (td (@ (class "hint js-detail"))
-                                              "")))
-                                      support-rows)))
-                           (p (@ (class "hint"))
-                              "Am besten geeignet ist ein aktueller Chrome oder Edge. "
-                              "Firefox und Safari nehmen Bildschirm, Mikrofon und Webcam auf, "
-                              "aber keinen Ton von Tabs oder vom System.")))
+                                      (lambda (pt)
+                                        (let
+                                            ((p (car pt))
+                                             (takes (cdr pt)))
+                                          `(tr
+                                            (td
+                                             (a (@ (href ,(project-url p)))
+                                                ,(alist-ref p 'title "")))
+                                            (td
+                                             (@ (class "num"))
+                                             ,(number->string (length takes)))
+                                            (td
+                                             (@ (class "num"))
+                                             ,(format-duration
+                                               (let loop ((ts takes) (acc 0))
+                                                 (if
+                                                  (null? ts)
+                                                  acc
+                                                  (loop
+                                                   (cdr ts)
+                                                   (+
+                                                    acc
+                                                    (alist-ref (car ts)
+                                                               'duration
+                                                               0)))))))
+                                            (td
+                                             ,(export-label
+                                               (alist-ref p 'export '())))
+                                            ,@(if
+                                               show-owner?
+                                               `((td
+                                                  ,(alist-ref p 'owner "")))
+                                               '())
+                                            (td
+                                             ,(format-date
+                                               (alist-ref p 'updated 0))))))
+                                      projects)))))
+                      ,(support-card))
             "js/support.js"))
+
+    (define (take-status-label t)
+      (case (alist-ref t 'status)
+        ((recording) "Aufnahme läuft oder wurde unterbrochen")
+        ((processing) "Wird verarbeitet …")
+        ((failed) (string-append "Fehler: " (or (alist-ref t 'error) "")))
+        (else "")))
+
+    (define (take-item p t n)
+      (let* ((tid (alist-ref t 'id))
+             (ready? (eq? (alist-ref t 'status) 'ready))
+             (screen (alist-ref t 'screen))
+             (cam (alist-ref t 'cam)))
+        `(li (@ (class "card take")
+                (data-take ,tid)
+                (data-status ,(symbol->string (alist-ref t 'status))))
+             (div (@ (class "take-media"))
+                  ,(if ready?
+                       `(video (@ (controls #t)
+                                  (preload "none")
+                                  (poster
+                                   ,(project-url p "/takes/" tid
+                                                 "/thumb.jpg"))
+                                  (src ,(project-url
+                                         p
+                                         "/takes/"
+                                         tid
+                                         "/"
+                                         (alist-ref screen 'file)))))
+                       `(div (@ (class "take-placeholder"))
+                             ,(take-status-label t))))
+             (div (@ (class "take-info"))
+                  (h3 ,(string-append "Aufnahme " (number->string n)))
+                  (p (@ (class "meta-line"))
+                     ,(format-duration (alist-ref t 'duration 0))
+                     ,@(if ready?
+                           (list " · "
+                                 (number->string (alist-ref t 'width 0))
+                                 "×"
+                                 (number->string (alist-ref t 'height 0))
+                                 (if (alist-ref t 'has-audio #f)
+                                     " · mit Ton"
+                                     " · ohne Ton")
+                                 (if (and cam (alist-ref cam 'file))
+                                     " · mit Webcam"
+                                     ""))
+                           '()))
+                  (div (@ (class "button-row"))
+                       ,(if (and ready? cam (alist-ref cam 'file))
+                            `(a (@ (class "button")
+                                   (href
+                                    ,(project-url p "/takes/" tid "/"
+                                                  (alist-ref cam 'file))))
+                                "Webcam ansehen")
+                            "")
+                       ,(if (eq? (alist-ref t 'status) 'recording)
+                            `(form (@ (method "post")
+                                      (class "inline")
+                                      (action
+                                       ,(project-url p "/takes/" tid
+                                                     "/finish")))
+                                   (button (@ (type "submit"))
+                                           "Unterbrochene Aufnahme retten"))
+                            "")
+                       (form (@ (method "post")
+                                (class "inline js-confirm")
+                                (data-confirm "Diese Aufnahme löschen?")
+                                (action
+                                 ,(project-url p "/takes/" tid "/delete")))
+                             (button (@ (type "submit") (class "danger"))
+                                     "Löschen")))))))
+
+    (define corner-labels
+      '((bottom-right . "unten rechts")
+        (bottom-left . "unten links")
+        (top-right . "oben rechts")
+        (top-left . "oben links")))
+
+    (define (project-page ctx p takes msg)
+      (let* ((e (alist-ref p 'export '()))
+             (cam (alist-ref p 'webcam '()))
+             (status (alist-ref e 'status 'none)))
+        (page ctx
+              (alist-ref p 'title "Projekt")
+              'project
+              `(section (@ (class "project js-project")
+                           (data-project ,(alist-ref p 'id))
+                           (data-api ,(url
+                                       (string-append "/api/projects/"
+                                                      (alist-ref p 'id))))
+                           (data-export ,(symbol->string status)))
+                        (p (a (@ (href ,(url "/"))) "‹ Alle Projekte"))
+                        ,(notice msg)
+                        (form (@ (method "post")
+                                 (action ,(project-url p "/title"))
+                                 (class "title-form"))
+                              (label (@ (class "visually-hidden")
+                                        (for "title"))
+                                     "Titel")
+                              (input (@ (id "title")
+                                        (name "title")
+                                        (required #t)
+                                        (maxlength "200")
+                                        (value ,(alist-ref p 'title ""))))
+                              (button (@ (type "submit")) "Umbenennen"))
+                        (div (@ (class "page-head"))
+                             (h2 "Aufnahmen")
+                             (a (@ (class "button primary")
+                                   (href ,(project-url p "/record")))
+                                ,(if (null? takes)
+                                     "Aufnahme starten"
+                                     "Weitere Aufnahme")))
+                        ,(if (null? takes)
+                             '(p (@ (class "empty")) "Noch keine Aufnahmen.")
+                             `(ol (@ (class "takes"))
+                                  ,@(let loop ((ts takes) (n 1))
+                                      (if
+                                       (null? ts)
+                                       '()
+                                       (cons (take-item p (car ts) n)
+                                             (loop (cdr ts) (+ n 1)))))))
+                        (div (@ (class "card"))
+                             (h2 "Export")
+                             (p (@ (class "hint"))
+                                "Alle fertigen Aufnahmen werden der Reihe nach zu einem MP4-Video "
+                                "(H.264/AAC) zusammengefügt; die Webcam wird eingeblendet.")
+                             (form (@ (method "post")
+                                      (action ,(project-url p "/export")))
+                                   (fieldset
+                                    (legend "Webcam")
+                                    (label
+                                     (@ (class "check"))
+                                     (input
+                                      (@ (type "checkbox")
+                                         (name "webcam-on")
+                                         (value "1")
+                                         (checked ,(alist-ref cam 'on #t))))
+                                     "Webcam einblenden")
+                                    (div
+                                     (@ (class "inline-fields"))
+                                     (label
+                                      "Position"
+                                      (select
+                                       (@ (name "corner"))
+                                       ,@(map
+                                          (lambda (c)
+                                            `(option
+                                              (@
+                                               (value
+                                                ,(symbol->string (car c)))
+                                               (selected
+                                                ,(eq?
+                                                  (car c)
+                                                  (alist-ref cam
+                                                             'corner
+                                                             'bottom-right))))
+                                              ,(cdr c)))
+                                          corner-labels)))
+                                     (label
+                                      "Grösse"
+                                      (select
+                                       (@ (name "size"))
+                                       ,@(map
+                                          (lambda (s)
+                                            `(option
+                                              (@
+                                               (value ,(car s))
+                                               (selected
+                                                ,(equal?
+                                                  (string->number (car s))
+                                                  (alist-ref cam
+                                                             'size
+                                                             0.22))))
+                                              ,(cdr s)))
+                                          '(("0.15" . "klein")
+                                            ("0.22" . "mittel")
+                                            ("0.3" . "gross")))))))
+                                   (button
+                                    (@ (type "submit")
+                                       (class "primary")
+                                       (disabled
+                                        ,(or (memq status '(queued running))
+                                             (null? takes))))
+                                    "Exportieren"))
+                             (div (@ (class "export-status"))
+                                  (p (@ (class "js-export-label"))
+                                     ,(export-label e)
+                                     ,(if
+                                       (eq? status 'failed)
+                                       (string-append
+                                        ": "
+                                        (or (alist-ref e 'error) ""))
+                                       ""))
+                                  (progress
+                                   (@ (class "js-export-progress")
+                                      (max "100")
+                                      (value
+                                       ,(number->string
+                                         (exact
+                                          (round
+                                           (* 100
+                                              (alist-ref e 'progress 0))))))
+                                      (hidden
+                                       ,(not
+                                         (memq status '(queued running)))))))
+                             ,(if (eq? status 'ready)
+                                  `(div
+                                    (@ (class "export-result"))
+                                    (video
+                                     (@
+                                      (controls #t)
+                                      (preload "metadata")
+                                      (class "export-video")
+                                      (src
+                                       ,(string-append
+                                         (project-url p "/export.mp4")
+                                         "?v="
+                                         (number->string
+                                          (alist-ref e 'finished 0))))))
+                                    (p (@ (class "meta-line"))
+                                       ,(format-duration
+                                         (alist-ref e 'duration 0))
+                                       " · "
+                                       ,(format-size (alist-ref e 'size 0)))
+                                    (a (@
+                                        (class "button primary")
+                                        (href
+                                         ,(string-append
+                                           (project-url p "/export.mp4")
+                                           "?download=1")))
+                                       "Herunterladen"))
+                                  ""))
+                        (form (@ (method "post")
+                                 (action ,(project-url p "/delete"))
+                                 (class "card danger-zone js-confirm")
+                                 (data-confirm
+                                  "Das ganze Projekt mit allen Aufnahmen löschen?"))
+                              (h2 "Projekt löschen")
+                              (button (@ (type "submit") (class "danger"))
+                                      "Projekt löschen")))
+              "js/project.js"
+              "js/confirm.js")))
+
+    (define (record-page ctx p)
+      (page ctx "Aufnehmen"
+            'record
+            `(section (@ (class "recorder js-recorder")
+                         (data-project ,(alist-ref p 'id))
+                         (data-api ,(url
+                                     (string-append "/api/projects/"
+                                                    (alist-ref p 'id))))
+                         (data-project-url ,(project-url p)))
+                      (p (a (@ (href ,(project-url p)))
+                            ,(string-append "‹ " (alist-ref p 'title ""))))
+                      (h1 "Aufnehmen")
+                      (p (@ (class "notice error js-unsupported")
+                            (hidden #t)))
+                      (div (@ (class "record-grid"))
+                           (div (@ (class "card"))
+                                (h2 "Bildschirm")
+                                (video (@ (class "preview js-screen-preview")
+                                          (muted #t)
+                                          (autoplay #t)
+                                          (playsinline #t)))
+                                (div (@ (class "button-row"))
+                                     (button
+                                      (@ (type "button")
+                                         (class "js-pick-screen"))
+                                      "Bildschirm, Fenster oder Tab wählen …"))
+                                (label (@
+                                        (class "check js-display-audio-row"))
+                                       (input
+                                        (@ (type "checkbox")
+                                           (class "js-display-audio")
+                                           (checked #t)))
+                                       "Ton des Tabs bzw. Systems mit aufnehmen")
+                                (label "Qualität"
+                                       (select
+                                        (@ (class "js-quality"))
+                                        (option (@ (value "1080"))
+                                                "bis 1080p")
+                                        (option (@ (value "720"))
+                                                "bis 720p"))))
+                           (div (@ (class "card"))
+                                (h2 "Mikrofon und Webcam")
+                                (div (@ (class "button-row"))
+                                     (button
+                                      (@ (type "button")
+                                         (class "js-allow-devices"))
+                                      "Mikrofon und Kamera freigeben"))
+                                (label "Mikrofon"
+                                       (select
+                                        (@ (class "js-mic"))
+                                        (option (@ (value ""))
+                                                "Kein Mikrofon")))
+                                (meter (@ (class "level js-level")
+                                          (min "0")
+                                          (max "1")
+                                          (low "0.6")
+                                          (high "0.85")
+                                          (optimum "0.3")
+                                          (value "0")))
+                                (label "Webcam"
+                                       (select
+                                        (@ (class "js-cam"))
+                                        (option (@ (value ""))
+                                                "Keine Webcam")))
+                                (video (@ (class "preview cam js-cam-preview")
+                                          (muted #t)
+                                          (autoplay #t)
+                                          (playsinline #t)
+                                          (hidden #t)))))
+                      (div (@ (class "card record-bar"))
+                           (span (@ (class "timer js-timer")) "0:00")
+                           (button (@ (type "button")
+                                      (class "primary record js-start")
+                                      (disabled #t))
+                                   "Aufnahme starten")
+                           (button (@ (type "button")
+                                      (class "js-pause")
+                                      (hidden #t))
+                                   "Pause")
+                           (button (@ (type "button")
+                                      (class "danger js-stop")
+                                      (hidden #t))
+                                   "Stopp")
+                           (span (@ (class "hint js-status")
+                                    (aria-live "polite"))
+                                 "Wählen Sie zuerst, was aufgenommen werden soll.")))
+            "js/record.js"))
 
     ;; --- errors --------------------------------------------------------------
 

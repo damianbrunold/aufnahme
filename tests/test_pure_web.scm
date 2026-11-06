@@ -35,7 +35,8 @@
               (data-dir . ,tmp)
               (session-secret . ,(base64-encode (random-bytes 32)))
               (session-max-age . 3600)
-              (secure-cookies? . #f))))
+              (secure-cookies? . #f)
+              (process? . #f))))
 
 ;; more: optional body (form string) and a list of extra header pairs.
 (define (send app method url cookie . more)
@@ -197,6 +198,143 @@
               (location (send app "POST" "/admin/site/reset" ada "")))
   (test-assert "reset to the configured name"
                (has? (body (send app "GET" "/login" #f)) "Aufnahme")))
+
+(parameterize ((password-pbkdf2-iterations fast-iterations))
+  (save-user! users-file "otto" (password-hash "otto password") 'user))
+(define otto (login "otto" "otto+password"))
+
+(define (json-send app method url cookie body)
+  (send app method url cookie body '(("Content-Type" . "application/json"))))
+
+(test-group "projects and recording API"
+  (let* ((r (send app "POST" "/projects" uli ""))
+         (loc (location r))
+         (pid (substring loc 3 14)))
+    (test-assert (has? loc "/record"))
+    (test-equal 200 (status (send app "GET" loc uli)))
+    (test-assert (has? (body (send app "GET" loc uli)) "js/record.js"))
+    (test-equal 200 (status (send app "GET" (string-append "/p/" pid) uli)))
+    (test-equal "other users cannot see it" 404
+                (status (send app "GET" (string-append "/p/" pid) otto)))
+    (test-equal "admins can" 200
+                (status (send app "GET" (string-append "/p/" pid) ada)))
+    (test-assert "listed for the owner"
+                 (has? (body (send app "GET" "/" uli)) pid))
+    (test-assert "not listed for others"
+                 (not (has? (body (send app "GET" "/" otto)) pid)))
+    (test-equal 401
+                (status (send app "GET"
+                              (string-append "/api/projects/" pid)
+                              #f)))
+    (test-equal 404
+                (status (send app "GET"
+                              (string-append "/api/projects/" pid)
+                              otto)))
+    (test-equal (string-append "/p/" pid "?m=no-takes")
+                (location (send app "POST"
+                                (string-append "/p/" pid "/export")
+                                uli
+                                "webcam-on=1&corner=top-left&size=0.3")))
+    (let* ((r (json-send app "POST"
+                         (string-append "/api/projects/" pid "/takes")
+                         uli
+                         "{\"screenMime\":\"video/webm;codecs=vp9,opus\",\"camMime\":\"video/webm;codecs=vp9\"}"))
+           (tid (substring (body r) 7 18))
+           (base (string-append "/api/projects/" pid "/takes/" tid)))
+      (test-equal 201 (status r))
+      (test-equal 400
+                  (status (json-send app "POST"
+                                     (string-append "/api/projects/" pid
+                                                    "/takes")
+                                     uli
+                                     "{}")))
+      (test-equal 200
+                  (status (send app "PUT"
+                                (string-append base "/screen?seq=0")
+                                uli
+                                (bytevector 1 2 3))))
+      (test-equal "retry is fine" 200
+                  (status (send app "PUT"
+                                (string-append base "/screen?seq=0")
+                                uli
+                                (bytevector 1 2 3))))
+      (let
+          ((r (send app "PUT"
+                    (string-append base "/screen?seq=3")
+                    uli
+                    (bytevector 4))))
+        (test-equal 409 (status r))
+        (test-assert (has? (body r) "\"expected\":1")))
+      (test-equal 404
+                  (status (send app "PUT"
+                                (string-append base "/audio?seq=0")
+                                uli
+                                (bytevector 4))))
+      (test-equal 400
+                  (status (send app "PUT"
+                                (string-append base "/cam")
+                                uli
+                                (bytevector 4))))
+      (test-equal 404
+                  (status (send app "PUT"
+                                (string-append base "/cam?seq=0")
+                                otto
+                                (bytevector 4))))
+      (test-assert (has? (body (send app "GET"
+                                     (string-append "/api/projects/" pid)
+                                     uli))
+                         "\"status\":\"recording\""))
+      (test-assert "an interrupted take can be rescued"
+                   (has? (body (send app "GET" (string-append "/p/" pid) uli))
+                         "Unterbrochene Aufnahme retten"))
+      ;; Garbage bytes: processing fails, but the request succeeds.
+      (test-equal 200
+                  (status (json-send app "POST"
+                                     (string-append base "/finish")
+                                     uli
+                                     "{\"screenStart\":1000.5,\"camStart\":1100}")))
+      (test-assert (not (has? (body (send app "GET"
+                                          (string-append "/api/projects/" pid)
+                                          uli))
+                              "\"status\":\"recording\"")))
+      (test-equal (string-append "/p/" pid "?m=take-deleted")
+                  (location (send app "POST"
+                                  (string-append "/p/" pid "/takes/" tid
+                                                 "/delete")
+                                  uli
+                                  "")))
+      (test-assert (has? (body (send app "GET"
+                                     (string-append "/api/projects/" pid)
+                                     uli))
+                         "\"takes\":[]")))
+    (let* ((r (json-send app "POST"
+                         (string-append "/api/projects/" pid "/takes")
+                         uli
+                         "{\"screenMime\":\"video/webm\"}"))
+           (tid (substring (body r) 7 18)))
+      (test-equal "an empty take is dropped" 400
+                  (status (json-send app "POST"
+                                     (string-append "/api/projects/" pid
+                                                    "/takes/" tid "/finish")
+                                     uli
+                                     "{}"))))
+    (test-equal (string-append "/p/" pid "?m=renamed")
+                (location (send app "POST"
+                                (string-append "/p/" pid "/title")
+                                uli
+                                "title=Git+Kurs")))
+    (test-assert (has? (body (send app "GET" "/" uli)) "Git Kurs"))
+    (test-equal 404
+                (status (send app "POST"
+                              (string-append "/p/" pid "/delete")
+                              otto
+                              "")))
+    (test-equal "/"
+                (location (send app "POST"
+                                (string-append "/p/" pid "/delete")
+                                uli
+                                "")))
+    (test-equal 404 (status (send app "GET" (string-append "/p/" pid) uli)))))
 
 (test-group "url prefix"
   (let* ((app (app-with "/rec"))

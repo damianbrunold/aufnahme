@@ -36,3 +36,9 @@
 ;; Programs used for processing (must be on the PATH, or give full paths).
 (define ffmpeg "ffmpeg")
 (define ffprobe "ffprobe")
+
+;; Export: x264 preset (ultrafast ... veryslow: slower = smaller files),
+;; quality (crf: 18 very good ... 28 smaller), and the widest output.
+(define export-preset "veryfast")
+(define export-crf 23)
+(define export-max-width 1920)

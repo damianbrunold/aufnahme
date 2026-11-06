@@ -15,7 +15,11 @@
           (srfi 18)
           (srfi 69)
           (scm crypto password)
+          (scm datetime)
           (scm fs)
+          (scm fs-find)
+          (scm json simple)
+          (scm log)
           (scm net http forms)
           (scm net http middleware)
           (scm net http multipart)
@@ -25,12 +29,15 @@
           (scm net http static)
           (scm string)
           (app auth)
+          (app media)
+          (app projects)
           (app site)
           (app store)
           (app theme)
           (app users)
           (app views))
-  (export make-app)
+  (export app-jobs
+          make-app)
   (begin
 
     (define cookie-name "aufnahme_session")
@@ -168,6 +175,54 @@
              "svg")
             (else #f)))
 
+    (define app-jobs (make-parameter #f))
+
+    (define (json-status status value)
+      (make-http-response status
+                          '(("Content-Type" .
+                             "application/json; charset=utf-8")
+                            ("Cache-Control" . "no-store"))
+                          (json->string value)))
+
+    (define (json-error status message)
+      (json-status status `(("error" . ,message))))
+
+    (define (parse-json-body req)
+      (let ((body (http-request-body req)))
+        (and (string? body)
+             (guard (e (#t #f))
+               (let ((j (json-parse body))) (and (list? j) j))))))
+
+    (define (free-bytes dir)
+      ;; df reports 1K blocks.
+      (let ((d (guard (e (#t '())) (df dir))))
+        (and (pair? d)
+             (let ((a (alist-ref (car d) 'available #f)))
+               (and (number? a) (* a 1024))))))
+
+    (define (clean-filename s)
+      (let ((s (if (and (string? s) (> (string-length s) 0)) s "aufnahme")))
+        (list->string (map (lambda (c)
+                             (if (or (char<? c #\space)
+                                     (memv
+                                      c
+                                      '(#\" #\/ #\\ #\: #\* #\? #\< #\> #\|)))
+                                 #\_
+                                 c))
+                           (string->list
+                            (if (> (string-length s) 120)
+                                (substring s 0 120)
+                                s))))))
+
+    (define (today-string)
+      ;; "06.11.2026" (UTC)
+      (let ((iso (format-iso8601 (now-seconds))))
+        (string-append (substring iso 8 10)
+                       "."
+                       (substring iso 5 7)
+                       "."
+                       (substring iso 0 4))))
+
     (define (write-bytevector-file path bv)
       (let ((tmp (string-append path ".tmp")))
         (let ((port (open-binary-output-file tmp)))
@@ -182,7 +237,9 @@
 Library: (app web)
 Description: Builds the app's request handler. settings is an alist:
   url-prefix, static-dir, data-dir (absolute paths), session-secret,
-  session-max-age (seconds), secure-cookies?, and optionally site-name."
+  session-max-age (seconds), secure-cookies?, and optionally site-name,
+  min-free-bytes, export-options (see export-arguments) and process? (#f:
+  no background worker; processing runs inside the request)."
       (let* ((site (make-site (setting settings 'url-prefix)
                               (setting settings 'static-dir)))
              (prefix (site-prefix site))
@@ -197,7 +254,15 @@ Description: Builds the app's request handler. settings is an alist:
              (initial-name (setting settings 'site-name "Aufnahme"))
              (login-limit (make-limiter 10 600))
              (router (make-router))
-             (_ (ensure-dir (settings-dir data-dir))))
+             (min-free (setting settings
+                                'min-free-bytes
+                                (* 2 1024 1024 1024)))
+             (export-options (setting settings 'export-options '()))
+             (jobs (and (setting settings 'process? #t) (make-jobs)))
+             (_ (begin
+                  (ensure-dir (settings-dir data-dir))
+                  (ensure-dir (string-append data-dir "/projects"))
+                  (app-jobs jobs))))
 
         (define (route! method path handler)
           (router-add! router method (string-append prefix path) handler))
@@ -230,6 +295,58 @@ Description: Builds the app's request handler. settings is an alist:
                                      (url-path (http-request-url req)))))))))
 
         (define (signed-in handler) (with-role 'user handler))
+
+        (define (own-project user params)
+          ;; The project named in the URL, if user may see it.
+          (let ((p (project-ref data-dir (params-ref params "pid"))))
+            (and p
+                 (or (equal? (alist-ref p 'owner) (user-name user))
+                     (has-role? user 'admin))
+                 p)))
+
+        (define (with-project handler)
+          (signed-in (lambda (req params user)
+                       (let ((p (own-project user params)))
+                         (if p
+                             (handler req params user p)
+                             (not-found user))))))
+
+        (define (api-project handler)
+          (lambda (req params)
+            (let* ((user (current-user req))
+                   (p (and (has-role? user 'user) (own-project user params))))
+              (cond ((not (has-role? user 'user))
+                     (json-error 401 "not signed in"))
+                    ((not p) (json-error 404 "no such project"))
+                    (else (handler req params user p))))))
+
+        (define (process-take-later! pid tid)
+          (take-update! data-dir pid tid
+                        (lambda (t) (alist-set t 'status 'processing)))
+          (enqueue-job! jobs
+                        (string-append "take:" pid "/" tid)
+                        (lambda () (process-take! data-dir pid tid))))
+
+        (define (project-json p)
+          `(("id" . ,(alist-ref p 'id))
+            ("takes"
+             .
+             ,(list->vector (map (lambda (t)
+                                   `(("id" . ,(alist-ref t 'id))
+                                     ("status"
+                                      .
+                                      ,(symbol->string (alist-ref t 'status)))
+                                     ("duration" . ,(alist-ref t 'duration 0))
+                                     ("error"
+                                      .
+                                      ,(or (alist-ref t 'error) 'null))))
+                                 (project-takes data-dir p))))
+            ("export"
+             .
+             ,(let ((e (alist-ref p 'export '())))
+                `(("status" . ,(symbol->string (alist-ref e 'status 'none)))
+                  ("progress" . ,(alist-ref e 'progress 0))
+                  ("error" . ,(or (alist-ref e 'error) 'null)))))))
 
         ;; --- static, theme, branding ---
 
@@ -272,11 +389,334 @@ Description: Builds the app's request handler. settings is an alist:
                    path)
                   (make-http-response 404 '() "")))))
 
-        ;; --- home ---
+        ;; --- projects ---
 
         (route! "GET" "/"
           (signed-in (lambda (req params user)
-                       (html-response (home-page (ctx user))))))
+                       (let* ((admin? (has-role? user 'admin))
+                              (ps (let loop ((ps (project-list data-dir)))
+                                    (cond
+                                     ((null? ps) '())
+                                     ((or
+                                       admin?
+                                       (equal? (alist-ref (car ps) 'owner)
+                                               (user-name user)))
+                                      (cons
+                                       (cons
+                                        (car ps)
+                                        (project-takes data-dir (car ps)))
+                                       (loop (cdr ps))))
+                                     (else (loop (cdr ps)))))))
+                         (html-response (home-page (ctx user) ps admin?))))))
+
+        (route! "POST" "/projects"
+          (signed-in (lambda (req params user)
+                       (let
+                           ((p (project-create!
+                                data-dir
+                                (user-name user)
+                                (string-append "Aufnahme vom "
+                                               (today-string)))))
+                         (redirect (string-append "/p/"
+                                                  (alist-ref p 'id)
+                                                  "/record"))))))
+
+        (route! "GET" "/p/:pid"
+          (with-project
+              (lambda (req params user p)
+                (html-response (project-page (ctx user)
+                                             p
+                                             (project-takes data-dir p)
+                                             (msg-of req))))))
+
+        (route! "GET" "/p/:pid/record"
+          (with-project
+              (lambda (req params user p)
+                (html-response (record-page (ctx user) p)))))
+
+        (route! "POST" "/p/:pid/title"
+          (with-project (lambda (req params user p)
+                          (let
+                              ((title (string-trim-both
+                                       (form-ref (http-request-form req)
+                                                 "title"
+                                                 ""))))
+                            (if (string=? title "")
+                                (redirect
+                                 (string-append "/p/"
+                                                (alist-ref p 'id)
+                                                "?m=no-title"))
+                                (begin
+                                  (project-update!
+                                   data-dir
+                                   (alist-ref p 'id)
+                                   (lambda (p)
+                                     (alist-set
+                                      p
+                                      'title
+                                      (if (> (string-length title) 200)
+                                          (substring title 0 200)
+                                          title))))
+                                  (redirect
+                                   (string-append "/p/"
+                                                  (alist-ref p 'id)
+                                                  "?m=renamed"))))))))
+
+        (route! "POST" "/p/:pid/delete"
+          (with-project (lambda (req params user p)
+                          (project-delete! data-dir (alist-ref p 'id))
+                          (log-info "projects"
+                                    (string-append (alist-ref p 'id)
+                                                   " deleted by "
+                                                   (user-name user)))
+                          (redirect "/"))))
+
+        (route! "POST" "/p/:pid/takes/:tid/delete"
+          (with-project (lambda (req params user p)
+                          (take-delete! data-dir
+                                        (alist-ref p 'id)
+                                        (params-ref params "tid"))
+                          (redirect (string-append "/p/"
+                                                   (alist-ref p 'id)
+                                                   "?m=take-deleted")))))
+
+        ;; A take whose browser never said "finished" (crash, closed tab):
+        ;; process what arrived.
+        (route! "POST" "/p/:pid/takes/:tid/finish"
+          (with-project (lambda (req params user p)
+                          (let* ((pid (alist-ref p 'id))
+                                 (t (take-ref data-dir pid
+                                              (params-ref params "tid"))))
+                            (if (and t (eq? (alist-ref t 'status) 'recording))
+                                (begin
+                                  (process-take-later! pid (alist-ref t 'id))
+                                  (redirect
+                                   (string-append "/p/" pid
+                                                  "?m=take-rescued")))
+                                (redirect (string-append "/p/" pid)))))))
+
+        (route! "GET" "/p/:pid/takes/:tid/:file"
+          (with-project (lambda (req params user p)
+                          (let* ((pid (alist-ref p 'id))
+                                 (t (take-ref data-dir pid
+                                              (params-ref params "tid")))
+                                 (file (params-ref params "file"))
+                                 (allowed
+                                  (and t
+                                       (list
+                                        "thumb.jpg"
+                                        (alist-ref (alist-ref t 'screen)
+                                                   'file)
+                                        (let ((c (alist-ref t 'cam)))
+                                          (and c (alist-ref c 'file)))))))
+                            (if (and allowed (member file allowed))
+                                (file-response
+                                 (take-file data-dir pid
+                                            (alist-ref t 'id)
+                                            file)
+                                 `((request . ,req)
+                                   (cache-control . "private, no-cache")))
+                                (not-found user))))))
+
+        (route! "POST" "/p/:pid/export"
+          (with-project (lambda (req params user p)
+                          (let* ((pid (alist-ref p 'id))
+                                 (form (http-request-form req))
+                                 (corner
+                                  (string->symbol
+                                   (form-ref form "corner" "bottom-right")))
+                                 (size (string->number
+                                        (form-ref form "size" "0.22"))))
+                            (project-update!
+                             data-dir
+                             pid
+                             (lambda (p)
+                               (alist-set
+                                p
+                                'webcam
+                                `((on .
+                                      ,(equal? (form-ref form "webcam-on" "")
+                                               "1"))
+                                  (corner
+                                   .
+                                   ,(if
+                                     (memq
+                                      corner
+                                      '(top-left top-right bottom-left
+                                        bottom-right))
+                                     corner
+                                     'bottom-right))
+                                  (size
+                                   .
+                                   ,(if (and (real? size) (<= 0.05 size 0.5))
+                                        size
+                                        0.22))
+                                  (margin . 24)))))
+                            (if (null? (project-segments
+                                        data-dir
+                                        (project-ref data-dir pid)))
+                                (redirect
+                                 (string-append "/p/" pid "?m=no-takes"))
+                                (begin
+                                  (project-update!
+                                   data-dir
+                                   pid
+                                   (lambda (p)
+                                     (alist-set
+                                      p
+                                      'export
+                                      (alist-set
+                                       (alist-set (alist-ref p 'export '())
+                                                  'status
+                                                  'queued)
+                                       'progress
+                                       0))))
+                                  (enqueue-job!
+                                   jobs
+                                   (string-append "export:" pid)
+                                   (lambda ()
+                                     (export-project! data-dir pid
+                                                      export-options)))
+                                  (redirect
+                                   (string-append "/p/" pid
+                                                  "?m=export-queued"))))))))
+
+        (route! "GET" "/p/:pid/export.mp4"
+          (with-project
+              (lambda (req params user p)
+                (let
+                    ((path (project-file data-dir
+                                         (alist-ref p 'id)
+                                         "export.mp4")))
+                  (if (file-exists? path)
+                      (file-response path
+                                     `((request . ,req)
+                                       (cache-control . "private, no-cache")
+                                       ,@(if
+                                          (qref req "download")
+                                          `((filename
+                                             .
+                                             ,(string-append
+                                               (clean-filename
+                                                (alist-ref p 'title ""))
+                                               ".mp4")))
+                                          '())))
+                      (not-found user))))))
+
+        ;; --- recording API ---
+
+        (route! "GET" "/api/projects/:pid"
+          (api-project (lambda (req params user p)
+                         (json-status 200 (project-json p)))))
+
+        (route! "POST" "/api/projects/:pid/takes"
+          (api-project (lambda (req params user p)
+                         (let* ((j (parse-json-body req))
+                                (smime (and j (json-ref j "screenMime" #f)))
+                                (cmime (and j (json-ref j "camMime" #f)))
+                                (free (free-bytes data-dir)))
+                           (cond ((not (string? smime))
+                                  (json-error 400 "screenMime required"))
+                                 ((and free (< free min-free))
+                                  (json-error 507
+                                              "Nicht genügend Speicherplatz auf dem Server."))
+                                 (else (let
+                                           ((t
+                                             (take-create!
+                                              data-dir
+                                              (alist-ref p 'id)
+                                              smime
+                                              (and (string? cmime) cmime))))
+                                         (json-status
+                                          201
+                                          `(("id"
+                                             .
+                                             ,(alist-ref t 'id)))))))))))
+
+        (route! "PUT" "/api/projects/:pid/takes/:tid/:track"
+          (api-project (lambda (req params user p)
+                         (let* ((track (params-ref params "track"))
+                                (seq (string->number
+                                      (or (qref req "seq") "")))
+                                (bytes (http-request-body-bytes req)))
+                           (cond ((not (member track '("screen" "cam")))
+                                  (json-error 404 "no such track"))
+                                 ((not (and (exact-integer? seq) (>= seq 0)))
+                                  (json-error 400 "seq required"))
+                                 ((not (bytevector? bytes))
+                                  (json-error 400 "empty chunk"))
+                                 (else (let
+                                           ((r
+                                             (take-append!
+                                              data-dir
+                                              (alist-ref p 'id)
+                                              (params-ref params "tid")
+                                              (string->symbol track)
+                                              seq
+                                              bytes)))
+                                         (cond
+                                          ((number? r)
+                                           (json-status 200
+                                                        `(("chunks" . ,r))))
+                                          ((pair? r)
+                                           (json-status
+                                            409
+                                            `(("error" . "out of order")
+                                              ("expected" . ,(cdr r)))))
+                                          (else
+                                           (json-error 404
+                                                       "no such take or not recording"))))))))))
+
+        (route! "POST" "/api/projects/:pid/takes/:tid/finish"
+          (api-project (lambda (req params user p)
+                         (let* ((pid (alist-ref p 'id))
+                                (tid (params-ref params "tid"))
+                                (t (take-ref data-dir pid tid))
+                                (j (or (parse-json-body req) '()))
+                                (start (lambda (key)
+                                         (let ((v (json-ref j key #f)))
+                                           (and (real? v) v)))))
+                           (cond ((not t) (json-error 404 "no such take"))
+                                 ((not (eq? (alist-ref t 'status) 'recording))
+                                  (json-status 200 '(("ok" . #t))))
+                                 ((= 0
+                                     (alist-ref (alist-ref t 'screen)
+                                                'bytes
+                                                0))
+                                  (take-delete! data-dir pid tid)
+                                  (json-error 400 "Die Aufnahme ist leer."))
+                                 (else (take-update!
+                                        data-dir
+                                        pid
+                                        tid
+                                        (lambda (t)
+                                          (let*
+                                              ((t
+                                                (alist-set
+                                                 t
+                                                 'screen
+                                                 (alist-set
+                                                  (alist-ref t 'screen)
+                                                  'start
+                                                  (start "screenStart")))))
+                                            (if
+                                             (alist-ref t 'cam)
+                                             (alist-set
+                                              t
+                                              'cam
+                                              (alist-set (alist-ref t 'cam)
+                                                         'start
+                                                         (start "camStart")))
+                                             t))))
+                                       (process-take-later! pid tid)
+                                       (json-status
+                                        200
+                                        `(("ok" . #t)
+                                          ("projectUrl"
+                                           .
+                                           ,(url
+                                             (string-append "/p/"
+                                                            pid)))))))))))
 
         ;; --- sign in ---
 
