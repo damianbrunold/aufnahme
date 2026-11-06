@@ -4,7 +4,7 @@ A screencast recorder that runs in the browser: a small "OBS" for
 recording tutorials. It is written in [dabscm](../dabscm) and is the
 companion of [filme](../filme), which presents the finished videos.
 
-**Status: phase 5 (conveniences).** You can:
+**Status: complete (phases 1–6).** You can:
 - create projects;
 - record takes (screen, window or tab, with microphone and tab/system
   audio, plus an optional webcam);
@@ -31,7 +31,9 @@ While recording:
 - **Local auto-login:** on a recording PC, `auto-login-user` signs one
   user in without a password (see below).
 
-Next: packaging polish and documentation (phase 6). The full plan, in
+Optional extras that could come later: per-take trimming handles in the
+editor, captions, and a shared library for the modules copied from
+filme. The full plan, in
 short:
 
 1. **Record:**
@@ -102,6 +104,7 @@ Data goes to `var/` (gitignored). `config.example.scm` lists every setting.
 bin/server.scm        load the config, serve the app
 bin/dev-server.scm    auto-reloading dev supervisor
 bin/user.scm          add / passwd / role / disable / enable / delete / list users
+bin/maintenance.scm   nightly: temporary files, old exports/projects (opt-in)
 bin/gen-secret.scm    print a new session secret (for key rotation)
 bin/init-config.scm   write a new config file
 src/app-config.sld    config reading (incl. (load ...)) and first-run creation
@@ -125,6 +128,7 @@ static/               CSS and ES-module JavaScript (no build step):
                       polling), support.js (browser check)
 tests/                run_all.sh; test_pure_* need no server or ffmpeg
 deploy/               systemd units, nginx/apache examples, README.Debian
+docs/DATA-FORMAT.md   the data folder, file by file
 package-deb.scm       builds the Debian package
 ```
 

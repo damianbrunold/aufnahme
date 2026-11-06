@@ -1,9 +1,10 @@
 aufnahme for Debian/Ubuntu
 ==========================
 
-A browser-based screencast recorder: record the screen, a window or a
-browser tab with the microphone and an optional webcam, edit the result
-with a simple cut list, export it as MP4 and publish it to filme.
+A browser-based screencast recorder. It records the screen, a window or a
+browser tab together with the microphone and an optional webcam. The
+recording is cut with a simple editor, exported as MP4 and can be
+published to filme.
 
 Browsers only allow screen capture on HTTPS or on http://localhost, so
 there are two ways to run it:
@@ -20,21 +21,25 @@ there are two ways to run it:
                    a proxy).
 
 Layout
-  /opt/aufnahme/app/            the app (bin, src, static)
+  /opt/aufnahme/app/            the app (bin, src, static, docs)
   /opt/aufnahme/bin/scm         the dabscm runtime it was built with
   /etc/aufnahme/config.scm      the config (created on first install with a
                                 fresh secret, never overwritten)
   /etc/default/aufnahme         optional: JAVA_OPTS="-Xmx512m"
   /var/lib/aufnahme/            ALL data: back up this folder
-    projects/                   recordings, edits and exports
-    users.scm                   users, roles and password hashes
+    projects/                   recordings, cut lists and exports
+    users.scm                   users, roles, password hashes, filme tokens
     site/                       settings.scm (name, colours), logo, favicon
   /usr/bin/aufnahme-admin       runs a tool from app/bin (as user aufnahme)
+
+  The data format is described in /opt/aufnahme/app/docs/DATA-FORMAT.md.
 
 Services
   aufnahme.service              the web app (127.0.0.1:8073 by default)
   aufnahme-health.timer         probes /healthz every minute, restarts the
                                 app after two failures
+  aufnahme-maintenance.timer    nightly: removes leftover temporary files,
+                                and (if configured) old exports and projects
 
 First install
   1. sudo apt install ./aufnahme_<version>_all.deb
@@ -47,10 +52,32 @@ First install
      and open http://localhost:8073.
   4. Sign in; the start page shows what the browser can record.
 
+Publishing to filme
+  1. Set filme-url in /etc/aufnahme/config.scm, e.g.
+       (define filme-url "https://filme.example.com")
+     and restart the service.
+  2. Each user creates an API token in filme (Profil -> API-Tokens) and
+     enters it on their profile page in aufnahme (checked before saving).
+  3. On a project with a finished export: "In filme veröffentlichen".
+     The video arrives in filme as a draft.
+
+Settings worth knowing (all in /etc/aufnahme/config.scm)
+  export-preset, export-crf      x264 speed/size and quality of exports
+  export-max-width               widest export (default 1920)
+  min-free-bytes                 recording is refused below this free space
+  export-max-age-days            nightly: delete exports older than this (0 = keep)
+  project-max-age-days           nightly: delete projects unchanged this long
+                                 (recordings included!; 0 = keep)
+
 Tools (run as the aufnahme user: sudo -u aufnahme aufnahme-admin <tool> ...)
   user add <name> [user|admin]  prompts for the password
   user passwd|role|disable|enable|delete <name> ...
   user list
+  maintenance                   what the nightly timer runs
+
+Backup and restore
+  Copy /var/lib/aufnahme (and /etc/aufnahme/config.scm). To restore, stop
+  the service, copy the folder back (owner aufnahme:aufnahme) and start it.
 
 Upgrades
   sudo apt install ./aufnahme_<newer>_all.deb restarts the services; the

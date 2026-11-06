@@ -1,0 +1,15 @@
+[Unit]
+Description=aufnahme maintenance (temporary files, old exports and projects)
+
+[Service]
+Type=oneshot
+User=aufnahme
+Group=aufnahme
+WorkingDirectory=/opt/aufnahme/app
+EnvironmentFile=-/etc/default/aufnahme
+ExecStart=/opt/aufnahme/bin/scm bin/maintenance.scm --config /etc/aufnahme/config.scm
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/aufnahme

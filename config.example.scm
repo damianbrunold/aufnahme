@@ -54,3 +54,9 @@
 (define export-preset "veryfast")
 (define export-crf 23)
 (define export-max-width 1920)
+
+;; Maintenance (bin/maintenance.scm, nightly): delete exports older than
+;; this many days (they can be rendered again), and whole projects not
+;; changed for this many days (recordings included!). 0 keeps everything.
+(define export-max-age-days 0)
+(define project-max-age-days 0)

@@ -20,7 +20,7 @@
                     "microphone and an optional webcam, right in the browser. Recordings"
                     "are edited with a simple cut list, exported as MP4 and can be"
                     "published to filme. All data lives in /var/lib/aufnahme.")
-                   (trees "src" "static")
+                   (trees "src" "static" "docs")
                    (bin-exclude "dev-server.scm")
                    (data-subdirs "projects" "site")
                    (config-settings ("data-dir" . "\"/var/lib/aufnahme\"")
@@ -31,6 +31,7 @@
                     "http://localhost:8073 on this machine (see /usr/share/doc/aufnahme/)")
                    (depends "ffmpeg")
                    (services "aufnahme.service")
-                   (timers "aufnahme-health.timer")
+                   (timers "aufnahme-health.timer"
+                    "aufnahme-maintenance.timer")
                    (default-port . 8073))
                  (cdr (command-line)))
